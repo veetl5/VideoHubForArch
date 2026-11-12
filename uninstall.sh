@@ -8,6 +8,7 @@ DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
 c() { printf '\033[%sm%s\033[0m\n' "$1" "$2"; }
 doit() { if [ "$DRY" = 1 ]; then c 36 "  [dry run] would: $1"; else shift; "$@"; fi; }
 c 36 "== VideoHub uninstall: $hub"
+ocdo() { node "$hub/scripts/opencode-config.mjs" "$@" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log("  "+JSON.parse(s).action)}catch{}})'; }
 
 # 1. stop this install's server
 for pid in $(pgrep -f "$hub/server/hub.js" 2>/dev/null); do doit "stop the VideoHub server (pid $pid)" kill "$pid"; done
@@ -28,7 +29,20 @@ if [ -f "$cm" ] && grep -qF "$hub" "$cm" && grep -qF 'videohub:begin' "$cm"; the
   fi
 fi
 
-# 3. menu entry and start at login (only when they point at this install)
+# 3. opencode: the MCP server, the skill and the rule (only when they belong to THIS install)
+ocHome="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+ocCfg="$ocHome/opencode.json"; [ -f "$ocHome/opencode.jsonc" ] && [ ! -f "$ocHome/opencode.json" ] && ocCfg="$ocHome/opencode.jsonc"
+if [ -f "$ocCfg" ] && grep -qF "$hub/server/mcp.js" "$ocCfg"; then
+  doit "remove the \"videohub\" MCP server from $ocCfg" ocdo mcp-remove --config "$ocCfg" --expect "$hub/server/mcp.js"
+fi
+osk="$ocHome/skills/videohub"
+if [ -d "$osk" ] && grep -qF "$hub" "$osk"/SKILL.md 2>/dev/null; then doit "remove the opencode skill $osk" rm -r "$osk"; fi
+oa="$ocHome/AGENTS.md"
+if [ -f "$oa" ] && grep -qF "$hub" "$oa" && grep -qF 'videohub:begin' "$oa"; then
+  doit "remove the VideoHub block from $oa" ocdo rule-remove --file "$oa" --expect "$hub"
+fi
+
+# 4. menu entry and start at login (only when they point at this install)
 for f in "${XDG_DATA_HOME:-$HOME/.local/share}/applications/videohub.desktop" "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/videohub.desktop"; do
   [ -f "$f" ] && grep -qF "$hub" "$f" && doit "remove $f" rm "$f"
 done

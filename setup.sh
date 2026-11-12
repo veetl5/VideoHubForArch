@@ -9,18 +9,21 @@
 #   --watch-found ask|yes|no    also watch video folders found on the Desktop / in Documents (recommended: no)
 #   --gpu-encoder ask|yes|no    render with the graphics card's video encoder when it has one (recommended: yes)
 #   --global-rule ask|yes|no    add the "review before rendering" rule to ~/.claude/CLAUDE.md (recommended: yes)
+#   --opencode ask|yes|no       set VideoHub up for opencode too: MCP server, rule and skill (recommended: yes when
+#                               opencode is installed; no when it is not)
 #   --launcher ask|yes|no       application-menu entry "VideoHub" (recommended: yes)
 #   --startup ask|yes|no        start VideoHub (server only, no window) when you log in (recommended: no)
 #   --example ask|yes|no        add the example film (recommended: yes)
 set -u
 hub="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-DRY=0; YES=0; WORKSPACE=""; WATCH=ask; GPU=ask; RULE=ask; LAUNCHER=ask; STARTUP=ask; EXAMPLE=ask
+DRY=0; YES=0; WORKSPACE=""; WATCH=ask; GPU=ask; RULE=ask; OPENCODE=ask; LAUNCHER=ask; STARTUP=ask; EXAMPLE=ask
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1;; --yes|-y) YES=1;;
     --workspace) WORKSPACE="${2:-}"; shift;;
     --watch-found) WATCH="${2:-ask}"; shift;; --gpu-encoder) GPU="${2:-ask}"; shift;;
-    --global-rule) RULE="${2:-ask}"; shift;; --launcher) LAUNCHER="${2:-ask}"; shift;;
+    --global-rule) RULE="${2:-ask}"; shift;; --opencode) OPENCODE="${2:-ask}"; shift;;
+    --launcher) LAUNCHER="${2:-ask}"; shift;;
     --startup) STARTUP="${2:-ask}"; shift;; --example) EXAMPLE="${2:-ask}"; shift;;
     -h|--help) sed -n 2,16p "$0"; exit 0;;
     *) echo "Unknown option: $1 (see --help)" >&2; exit 2;;
@@ -65,6 +68,10 @@ done
 claude="$(command -v claude || true)"
 if [ -n "$claude" ]; then say "Claude Code: ok ($claude)"
 else warn "Claude Code was not found. VideoHub works without it, but Claude Code is what writes the films: https://claude.com/claude-code"; fi
+opencode_bin="$(command -v opencode || true)"
+if [ -n "$opencode_bin" ]; then say "opencode: ok ($opencode_bin)"
+elif [ "$OPENCODE" = yes ]; then warn "opencode was not found; its files are written anyway (https://opencode.ai)"
+else say "opencode: not installed (optional; --opencode yes sets it up anyway)"; fi
 
 # 2. packages
 if [ "$DRY" = 1 ]; then plan "npm install in $hub"
@@ -109,36 +116,70 @@ elif [ -n "$claude" ]; then
   else todo+=("Register the MCP server by hand:  claude mcp add --scope user videohub -- node \"$mcp\""); fi
 else todo+=("Register the MCP server once Claude Code is installed:  claude mcp add --scope user videohub -- node \"$mcp\""); fi
 
-# 5. the skill Claude reads (~/.claude/skills/videohub), with this install's path filled in
+# 5. the skill the agent reads (~/.claude/skills/videohub), with this install's path filled in
+install_skill() {  # install_skill <folder>
+  mkdir -p "$1"
+  for f in "$hub"/skill/videohub/*; do [ -f "$f" ] && sed "s#{{VIDEOHUB_DIR}}#$hub#g" "$f" > "$1/$(basename "$f")"; done
+}
 claudeHome="$HOME/.claude"
 if [ "$DRY" = 1 ]; then plan "copy skill/videohub to $claudeHome/skills/videohub (with {{VIDEOHUB_DIR}} = $hub)"
-else
-  mkdir -p "$claudeHome/skills/videohub"
-  for f in "$hub"/skill/videohub/*; do [ -f "$f" ] && sed "s#{{VIDEOHUB_DIR}}#$hub#g" "$f" > "$claudeHome/skills/videohub/$(basename "$f")"; done
-  say "Skill installed: $claudeHome/skills/videohub"
-fi
+else install_skill "$claudeHome/skills/videohub"; say "Skill installed: $claudeHome/skills/videohub"; fi
 
 # 6. the global rule, between marker lines in ~/.claude/CLAUDE.md (replaced on the next run, removed by uninstall.sh)
 cm="$claudeHome/CLAUDE.md"; begin='<!-- videohub:begin (added by VideoHub setup; remove with uninstall.sh) -->'; end='<!-- videohub:end -->'
 want="$RULE"
 [ "$want" = ask ] && [ -f "$cm" ] && grep -qF 'videohub:begin' "$cm" && want=yes
-want="$(decide "$want" "Should Claude show every new film in VideoHub before it renders? (adds a short rule to ~/.claude/CLAUDE.md)" yes)"
+want="$(decide "$want" "Should the agent show every new film in VideoHub before it renders? (adds a short rule to ~/.claude/CLAUDE.md and, with opencode, to ~/.config/opencode/AGENTS.md)" yes)"
 if [ "$want" = yes ]; then
   block="$begin"$'\n'"$(sed "s#{{VIDEOHUB_DIR}}#$hub#g" "$hub/claude/global-rule.md")"$'\n'"$end"
   if [ "$DRY" = 1 ]; then plan "write this block into $cm:"; echo "$block" | sed 's/^/    /'
   else
     mkdir -p "$claudeHome"; [ -f "$cm" ] && cp "$cm" "$cm.videohub-backup"
-    BLOCK="$block" BEGIN="$begin" END="$end" node -e '
-      const fs=require("fs"),f=process.argv[1];let cur="";try{cur=fs.readFileSync(f,"utf8")}catch{}
-      const a=cur.indexOf(process.env.BEGIN), b=cur.indexOf(process.env.END);
-      let out; if(a>=0&&b>a) out=cur.slice(0,a)+process.env.BLOCK+cur.slice(b+process.env.END.length);
-      else out=(cur.trim()?cur.trimEnd()+"\n\n":"")+process.env.BLOCK+"\n";
-      fs.writeFileSync(f,out)' "$cm"
-    say "Global rule added to $cm (backup: CLAUDE.md.videohub-backup)"
+    node "$hub/scripts/opencode-config.mjs" rule-add --file "$cm" --rule "$hub/claude/global-rule.md" --videohub-dir "$hub" >/dev/null \
+      && say "Global rule added to $cm (backup: CLAUDE.md.videohub-backup)" \
+      || todo+=("Add the VideoHub rule to $cm by hand (the text is in $hub/claude/global-rule.md)")
   fi
 else echo "  Global rule skipped (run ./setup.sh --global-rule yes to add it later)."; fi
+rule_on="$want"
 
-# 7. application-menu entry
+# 7. opencode (https://opencode.ai): the same MCP server, rule and skill in opencode's own files
+ocHome="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+ocCfg="$ocHome/opencode.json"; [ -f "$ocHome/opencode.jsonc" ] && [ ! -f "$ocHome/opencode.json" ] && ocCfg="$ocHome/opencode.jsonc"
+ocAgents="$ocHome/AGENTS.md"
+ocjs() { printf '%s' "${1:-}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log(j.error?"error: "+j.error:(j.action||"unchanged"))}catch{console.log("unchanged")}})'; }
+want="$OPENCODE"
+if [ "$want" = ask ]; then
+  if [ -n "$opencode_bin" ]; then want="$(decide ask "Also set VideoHub up for opencode? (MCP server, the review rule and the skill)" yes)"
+  else want=no; fi
+fi
+if [ "$want" = yes ]; then
+  ocn="$(command -v node)"
+  if [ "$DRY" = 1 ]; then
+    plan "add the MCP server \"videohub\" to $ocCfg (command: \"$ocn\" \"$mcp\")"
+    plan "copy skill/videohub to $ocHome/skills/videohub"
+    if [ "$rule_on" = yes ]; then plan "write the review rule into $ocAgents"; fi
+  else
+    mkdir -p "$ocHome"; [ -f "$ocCfg" ] && cp "$ocCfg" "$ocCfg.videohub-backup"
+    cmds="$(node -e 'console.log(JSON.stringify(process.argv.slice(1)))' "$ocn" "$mcp")"
+    r="$(node "$hub/scripts/opencode-config.mjs" mcp-add --config "$ocCfg" --command-json "$cmds" 2>/dev/null || true)"
+    act="$(ocjs "$r")"
+    case "$act" in
+      error:*) err "opencode config: ${act#error: }"; todo+=("Add the MCP server to \"$ocCfg\" by hand: {\"mcp\": {\"videohub\": {\"type\": \"local\", \"command\": [\"node\", \"$mcp\"], \"enabled\": true }}}");;
+      *) say "opencode: $act in $ocCfg";;
+    esac
+    install_skill "$ocHome/skills/videohub"; say "Skill installed for opencode: $ocHome/skills/videohub"
+    if [ "$rule_on" = yes ]; then
+      r="$(node "$hub/scripts/opencode-config.mjs" rule-add --file "$ocAgents" --rule "$hub/claude/global-rule.md" --videohub-dir "$hub" 2>/dev/null || true)"
+      act="$(ocjs "$r")"
+      case "$act" in
+        error:*) todo+=("Add the VideoHub rule to \"$ocAgents\" by hand (the text is in $hub/claude/global-rule.md)");;
+        *) say "opencode: $act in $ocAgents";;
+      esac
+    fi
+  fi
+else echo "  opencode skipped (run ./setup.sh --opencode yes to set it up later)."; fi
+
+# 8. application-menu entry
 chmod +x "$hub/videohub.sh" 2>/dev/null
 apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"; desktop="$apps/videohub.desktop"
 want="$(decide "$LAUNCHER" "Add VideoHub to your application menu?" yes)"
@@ -152,7 +193,7 @@ if [ "$want" = yes ]; then
   fi
 fi
 
-# 8. start at login (server only)
+# 9. start at login (server only)
 want="$(decide "$STARTUP" "Start VideoHub (no window) when you log in? It then keeps render protection on all the time." no)"
 if [ "$want" = yes ]; then
   auto="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/videohub.desktop"
@@ -160,7 +201,7 @@ if [ "$want" = yes ]; then
   else mkdir -p "$(dirname "$auto")"; printf '[Desktop Entry]\nType=Application\nName=VideoHub (server)\nExec="%s/videohub.sh" --server\nTerminal=false\nX-GNOME-Autostart-enabled=true\n' "$hub" > "$auto"; say "Start at login: $auto"; fi
 fi
 
-# 9. the example film
+# 10. the example film
 want="$(decide "$EXAMPLE" "Add the 10-second example film?" yes)"
 if [ "$want" = yes ]; then
   if [ "$DRY" = 1 ]; then plan "copy examples/hello-film into the films folder"
@@ -171,4 +212,4 @@ echo
 if [ ${#todo[@]} -gt 0 ]; then warn "Left for you to do:"; for t in "${todo[@]}"; do echo "  - $t"; done; fi
 c 36 "== Done"
 echo "  Open VideoHub from your application menu, or run: $hub/videohub.sh"
-echo "  Then start a NEW Claude Code session so it sees the hub_* tools."
+echo "  Then start a NEW Claude Code or opencode session so it sees the tools (hub_*, or videohub_hub_* in opencode)."

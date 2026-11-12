@@ -38,8 +38,10 @@ whole film to check one fix.
   disk on the timeline; renders use the rebuilt mix.
 - **Thumbnail Studio** — sketch a thumbnail (posed mannequins, objects, text, camera/depth/light), send the brief to
   Claude, which makes the variants; annotate a variant, add the final text in code.
-- **Claude tools (MCP)** — `hub_live`, `hub_notes`, `hub_note_update`, `hub_render`, `hub_job`, `hub_project`, `hub_workspace`,
+- **Agent tools (MCP)** — `hub_live`, `hub_notes`, `hub_note_update`, `hub_render`, `hub_job`, `hub_project`, `hub_workspace`,
   `hub_register_version`, `hub_cleanup`, `hub_thumb_*`; the same tools work from a shell (`node server/cli.js`).
+- **Claude Code and opencode** — setup registers the MCP server, the review rule and the skill for both (opencode shows
+  the tools as `videohub_hub_*`); see [Works with opencode](#works-with-opencode).
 
 ![Projects](docs/screenshots/projects.png)
 
@@ -70,7 +72,7 @@ VideoHub works the same; renders just run unprotected.
 - Node.js 22+ and npm: `sudo pacman -S nodejs npm`
 - ffmpeg: `sudo pacman -S ffmpeg`
 - A Chromium-family browser (renders drive it headless): `sudo pacman -S chromium`
-- [Claude Code](https://claude.com/claude-code) for the Claude side
+- [Claude Code](https://claude.com/claude-code) and/or [opencode](https://opencode.ai) for the agent side
 - Optional, each one only enables a feature: `xdg-utils` (open files/folders), `libnotify` (render notifications), `zenity` (folder picker), `glib2` or `trash-cli` (Trash), `pciutils` (GPU detection), `util-linux` (CPU limits via `taskset`)
 
 ## Install
@@ -81,7 +83,27 @@ git clone https://github.com/veetl5/VideoHubForArch VideoHub && cd VideoHub
 ./setup.sh              # asks a few plain questions; Enter takes the recommended answer
 ```
 
-`setup.sh` checks the requirements, runs `npm install`, writes `data/config.json` and the workspace folders (default `~/Documents/VideoHub`: `films`, `outputs`, `sounds`, `thumbnails`, `archive`), registers the `videohub` MCP server and the `videohub` skill for Claude Code, optionally adds the review-before-render rule to `~/.claude/CLAUDE.md`, an application-menu entry, start at login, and the example film. Every question is also a flag (see the top of `setup.sh`; `--yes` takes every recommended answer). Re-running keeps all answers. Start a **new** Claude Code session afterwards so it sees the `hub_*` tools. Open VideoHub from the menu or with `./videohub.sh`.
+`setup.sh` checks the requirements, runs `npm install`, writes `data/config.json` and the workspace folders (default `~/Documents/VideoHub`: `films`, `outputs`, `sounds`, `thumbnails`, `archive`), registers the `videohub` MCP server and the `videohub` skill for Claude Code **and for opencode**, optionally adds the review-before-render rule to `~/.claude/CLAUDE.md` and `~/.config/opencode/AGENTS.md`, an application-menu entry, start at login, and the example film. Every question is also a flag (see the top of `setup.sh`; `--yes` takes every recommended answer). Re-running keeps all answers. Start a **new** Claude Code or opencode session afterwards so it sees the tools. Open VideoHub from the menu or with `./videohub.sh`.
+
+## Works with opencode
+
+Claude Code and [opencode](https://opencode.ai) both work; `setup.sh` sets up whichever it finds (ask for opencode with
+`--opencode yes`, skip it with `--opencode no`). For opencode it writes:
+
+| What | Where |
+|---|---|
+| the MCP server `videohub` (`type: "local"`, `command: ["node", "<VideoHub>/server/mcp.js"]`) | `~/.config/opencode/opencode.json` (or `opencode.jsonc` if you already use one) |
+| the review-before-render rule, between `<!-- videohub:begin/end -->` markers | `~/.config/opencode/AGENTS.md` |
+| the `videohub` skill (with this install's path filled in) | `~/.config/opencode/skills/videohub/SKILL.md` |
+
+Both files are edited in place: your other servers, models, permissions and comments stay exactly as they were, and a
+file VideoHub cannot read is never rewritten (setup then prints the snippet to add by hand). A backup is kept next to
+each file as `*.videohub-backup`.
+
+**One naming difference:** opencode prefixes MCP tools with the server name, so `hub_live` is `videohub_hub_live`,
+`hub_notes` is `videohub_hub_notes`, and so on. The skill and the rule say this, so the agent picks the right names.
+Without the MCP tools (any other agent), the same commands run from the shell:
+`node "<VideoHub>/server/cli.js" hub_live '{"project":"<film folder>"}'`.
 
 ## Your first film
 1. If setup added the example film, its card is on the Projects page. Otherwise the page shows **Welcome to
@@ -93,16 +115,17 @@ git clone https://github.com/veetl5/VideoHubForArch VideoHub && cd VideoHub
 What a film folder must contain for each feature: [docs/PROJECT-CONTRACT.md](docs/PROJECT-CONTRACT.md). New films start
 from [templates/new-film](templates/new-film).
 
-## How working with Claude goes
-1. **Ask** Claude Code for a video. It builds the film as code from the template (the `videohub` skill tells it how).
-2. **Preview** — when it plays, Claude calls `hub_live`: VideoHub jumps to the film. Claude stops and waits; it does
+## How working with the agent goes
+The same in Claude Code and in opencode (in opencode the tools are named `videohub_hub_live`, `videohub_hub_notes`, …).
+1. **Ask** the agent for a video. It builds the film as code from the template (the `videohub` skill tells it how).
+2. **Preview** — when it plays, the agent calls `hub_live`: VideoHub jumps to the film. It stops and waits; it does
    not render.
 3. **Notes** — you watch, leave notes on frames, press **Send to Claude** and paste the message into the chat.
-4. **Fix** — Claude reads them with `hub_notes`, fixes the code (your open preview updates by itself) and marks each
+4. **Fix** — the agent reads them with `hub_notes`, fixes the code (your open preview updates by itself) and marks each
    note fixed with a one-line reply. Repeat 3–4 as often as you like.
-5. **Render** — when you say so, Claude renders once through `hub_render` (or you press 🎬 Render). Later fixes
+5. **Render** — when you say so, the agent renders once through `hub_render` (or you press 🎬 Render). Later fixes
    re-render only the changed chunks. You check them with *Watch only the changes* and the *Check fixes* tour.
-If the MCP tools are not loaded in a session, Claude uses `node <VideoHub>/server/cli.js <tool> '<json>'`.
+If the MCP tools are not loaded in a session, the agent uses `node <VideoHub>/server/cli.js <tool> '<json>'`.
 
 ## Optional integrations
 | Feature | Needs | Without it |
@@ -120,15 +143,21 @@ inside your watched folders, the archive and its own folders.
 
 ## Uninstall
 Run `./uninstall.sh` (`--dry-run` first to see what it would do). It stops this
-install's server and agent, removes the MCP server, the skill and the rule block it added (only if they belong to this
-install), the menu entry and the start-up entry. Your films, their notes, the outputs folder and this folder stay;
-delete them yourself if you want.
+install's server and agent, removes the MCP servers, the skills and the rule blocks it added for Claude Code **and
+opencode** (only if they belong to this install), the menu entry and the start-up entry. Your films, their notes, the
+outputs folder and this folder stay; delete them yourself if you want.
 
 ## Troubleshooting
 - **The page is blank** — open it in a browser and look at the console; a missing Node 22 or a broken update are the
   usual causes. Restart with `./videohub.sh`.
 - **Claude does not see `hub_*` tools** — start a new Claude Code session; `claude mcp list` should show `videohub`.
   Run `./setup.sh` again if not.
+- **opencode does not see the tools** — start a new opencode session (it reads its config at start-up); the `mcp` block
+  in `~/.config/opencode/opencode.json` should have `videohub` with `"type": "local"`. The tool names there carry the
+  server prefix: `videohub_hub_live`, `videohub_hub_notes`, … Run `./setup.sh --opencode yes` again if the block is
+  missing; the previous file is kept as `opencode.json.videohub-backup`.
+- **opencode ignores the review rule** — it reads `~/.config/opencode/AGENTS.md` (and only falls back to
+  `~/.claude/CLAUDE.md` when that file does not exist). `./setup.sh --opencode yes` writes the block there.
 - **"This folder is not a project VideoHub knows"** — put the film inside a watched folder or add its parent folder
   in Settings → Watched folders.
 - **"The live preview could not open"** — the page lacks `window.renderOut(t)` / `window.READY`; see

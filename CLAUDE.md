@@ -1,8 +1,10 @@
 # VideoHub: notes for Claude working on this repo
 
 Local hub for videos written as code (catalog, live preview with no render, review notes, protected render
-queue, MCP tools). Node 22+, ES modules, no build step, vanilla-JS UI, render protection built in. Architecture, map and the
-pitfalls behind past bugs: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). What a film project must look like:
+queue, MCP tools). Node 22+, ES modules, no build step, vanilla-JS UI, render protection built in. The agent side is
+Claude Code **or opencode**: `setup.sh` registers the same MCP server, rule and skill in both
+(`scripts/opencode-config.mjs`). Architecture, map and the pitfalls behind past bugs:
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). What a film project must look like:
 [docs/PROJECT-CONTRACT.md](docs/PROJECT-CONTRACT.md).
 
 ## Installing VideoHub for the user (Arch Linux)
@@ -15,18 +17,22 @@ a step is for before running it, never ask them to type a command. Do not change
 2. **Look, change nothing.** `./setup.sh --dry-run`; `node scripts/init-config.mjs --state`; `node scripts/init-config.mjs --detect`.
 3. **Ask the user** (question tool, recommended answer first, skip what `--state` shows as decided): workspace folder
    (default `~/Documents/VideoHub`; check a typed path with `node scripts/init-config.mjs --check "<folder>"`), watch
-   found folders (no), graphics-card encoder (yes, only if detected), the review-before-render rule (yes), application-menu
-   entry (yes), start at login (no), example film (yes).
-4. **Install once:** `./setup.sh --workspace "<folder>" --watch-found yes|no --gpu-encoder yes|no --global-rule yes|no --launcher yes|no --startup yes|no --example yes|no`.
+   found folders (no), graphics-card encoder (yes, only if detected), the review-before-render rule (yes), opencode too
+   (yes when `command -v opencode` finds it), application-menu entry (yes), start at login (no), example film (yes).
+4. **Install once:** `./setup.sh --workspace "<folder>" --watch-found yes|no --gpu-encoder yes|no --global-rule yes|no --opencode yes|no --launcher yes|no --startup yes|no --example yes|no`.
    Show errors in plain words and stop; do not work around them.
-5. **Check:** `node server/cli.js hub_workspace`; `./videohub.sh` opens the window.
+5. **Check:** `node server/cli.js hub_workspace`; `./videohub.sh` opens the window. With `--opencode yes`, also check
+   `~/.config/opencode/opencode.json` has `mcp.videohub` and `~/.config/opencode/AGENTS.md` has the rule block.
 6. **Tell the user what now:** where the workspace is, how to open VideoHub, the first thing to try, and that they must
-   start a **new** Claude Code session for the `hub_*` tools.
+   start a **new** session (Claude Code, or opencode where the tools are named `videohub_hub_*`) for the tools to load.
 
 ## Setup on a new computer (what `setup.sh` does)
 `./setup.sh` (`--dry-run` changes nothing outside this folder; `--yes` takes every recommended answer). It checks Node 22+,
 ffmpeg and a Chromium browser, runs `npm install`, asks the questions above (logic in `scripts/init-config.mjs`, unit-tested),
-registers the MCP server `videohub` (user scope) and installs `skill/videohub` into `~/.claude/skills`. Uninstall: `./uninstall.sh`.
+registers the MCP server `videohub` (user scope) and installs `skill/videohub` into `~/.claude/skills`; with opencode it
+also writes `mcp.videohub` into `~/.config/opencode/opencode.json` (or `.jsonc`), the rule into
+`~/.config/opencode/AGENTS.md` and the skill into `~/.config/opencode/skills` (text splices that keep the user's other
+settings and comments; `scripts/opencode-config.mjs`, unit-tested). Uninstall: `./uninstall.sh`.
 Linux-specific code lives in `server/platform.js` (trash, notifications, file manager, folder picker, process tree, autostart);
 see docs/ARCH.md.
 
@@ -34,7 +40,7 @@ see docs/ARCH.md.
 - `server/hub.js` HTTP + SSE; `scan.js` projects; `live.js` live preview; `notes.js` notes; `jobs.js` render queue;
   `tools.js` the `hub_*` tools (`mcp.js`, `cli.js`); `legacy.js` + `ui/values.js` stored values and legacy aliases;
   `config.js` settings and default folders (the workspace, `~/Documents/VideoHub/…` by default); `encoders.js` render
-  encoders; `scripts/init-config.mjs` setup's config helper.
+  encoders; `scripts/init-config.mjs` setup's config helper; `scripts/opencode-config.mjs` setup's opencode helper.
 - `ui/app.js` pages, `ui/review*` review editor, `ui/thumbstudio*` Thumbnail Studio.
 - `server/platform.js` OS-specific code; `engine-hooks/` page-side editor hooks; `examples/hello-film` the example film;
   `templates/new-film` the starter for new films; `templates/thumbnail` built-in thumbnail templates.
