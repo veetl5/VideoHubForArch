@@ -1,0 +1,15 @@
+# dependencies
+node_modules/
+
+# VideoHub's own settings, caches, logs and render queue (created by setup.sh / the server)
+data/
+logs/
+*.log
+
+# scratch folders made by the test suite
+.test-tmp/
+
+# editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
