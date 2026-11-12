@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ENCODERS, ENCODER_ARGS, PROBE_ORDER, pickEncoder, detectEncoders, encoderEnv } from './encoders.js';
 
 // the film render script carries its own copy of the table (films copy the script): both must say the same
@@ -31,8 +32,10 @@ test('pickEncoder: auto takes the first GPU encoder whose probe works, else x264
 });
 
 test('detectEncoders probes once and caches (memory and file, keyed by the ffmpeg binary)', async () => {
-  const dir = new URL('../.test-tmp/encoders-cache/', import.meta.url); fs.mkdirSync(dir, { recursive: true });
-  const cacheFile = new URL('cache.json', dir).pathname.replace(/^\/(\w:)/, '$1'); try { fs.renameSync(cacheFile, cacheFile + '.' + Date.now()); } catch { }
+  // a real filesystem path (fileURLToPath, not .pathname: a folder with a space, a % or a non-ASCII letter in its name
+  // would otherwise point somewhere else than the folder just created)
+  const dir = fileURLToPath(new URL('../.test-tmp/encoders-cache/', import.meta.url)); fs.mkdirSync(dir, { recursive: true });
+  const cacheFile = path.join(dir, 'cache.json'); try { fs.renameSync(cacheFile, cacheFile + '.' + Date.now()); } catch { }
   let calls = 0; const probe = async n => { calls++; return n === 'amf' ? ['x'] : null; }, gpus = async () => ['Some GPU'];
   const a = await detectEncoders({ ffmpeg: 'fake-ffmpeg-1', cacheFile, probe, gpus });
   assert.deepEqual(a.available, ['amf', 'x264']); assert.equal(a.best, 'amf'); assert.deepEqual(a.gpus, ['Some GPU']); assert.equal(calls, 3);
