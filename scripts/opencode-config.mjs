@@ -280,12 +280,35 @@ export function desktopFound(env = process.env, exists = fs.existsSync, readdir 
   return [...known, ...loose].find(p => exists(p)) || null;
 }
 
-// which opencode this machine runs, so status can name the config shape it reads (1.x: mcp.<name>, V2: mcp.servers.<name>)
+const stripAnsi = s => String(s).replace(/\u001b\[[0-9;]*m/g, '');
+
+// which opencode this machine runs, so status can name the config shape it reads (1.x: mcp.<name>, V2: mcp.servers.<name>).
+// `opencode --version` prints things like "1.19.5" and "opencode v2.2.6", so the major is read off the number, not the text.
 export function opencodeVersion(bin = process.env.OPENCODE_BIN || 'opencode') {
   try {
-    const out = execFileSync(bin, ['--version'], { timeout: 4000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    return String(out).trim().split('\n').pop().trim() || null;
+    const out = execFileSync(bin, ['--version'], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const line = stripAnsi(String(out)).trim().split('\n').filter(l => l.trim()).pop() || '';
+    const m = (/(\d+)\.(\d+)(?:\.(\d+))?/.exec(line));
+    return line ? { version: line.trim(), major: m ? Number(m[1]) : null } : null;
   } catch { return null; }
+}
+
+// what the installed client itself says about the server: `opencode mcp list` starts the server the same way the app does,
+// so this is the end-to-end answer ("videohub connected" / "failed"), whichever config shape that client reads
+export function probeMcp(name = SERVER, bin = process.env.OPENCODE_BIN || 'opencode', timeout = 30000) {
+  let out = '';
+  try {
+    out = execFileSync(bin, ['mcp', 'list'], { timeout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) {
+    out = String((e && e.stdout) || '') + String((e && e.stderr) || '');
+    if (!out.trim()) return { ran: false, connected: false, detail: String((e && e.message) || e) };
+  }
+  const lines = stripAnsi(out).split('\n').map(l => l.replace(/[│└┌●]/g, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const line = lines.find(l => l.includes(name)) || '';
+  const bad = /✗|failed|error/i.test(line);
+  const connected = !!line && !bad && /✓|connected|ready/i.test(line);
+  const empty = lines.some(l => /no mcp servers/i.test(l));
+  return { ran: true, connected, detail: line || (empty ? 'no MCP servers configured' : (lines[0] || '')) };
 }
 
 export function run(argv) {
@@ -383,8 +406,9 @@ export function run(argv) {
     const skillOk = fs.existsSync(skill);
     const ready = pointsHere && enabled && rule && skillOk;
     const desktop = desktopFound();
-    const version = args['skip-cli'] ? null : opencodeVersion();
-    const v2isCurrent = !!version && /^\s*2\./.test(version);
+    const cli = args['skip-cli'] ? null : opencodeVersion();
+    const probe = args['skip-cli'] ? null : probeMcp(name);
+    const v2isCurrent = !!cli && cli.major !== null && cli.major >= 2;
     return {
       ok: true, ready, hub,
       mcp: {
@@ -393,12 +417,16 @@ export function run(argv) {
         v1: { ...v1, where: 'mcp.' + name }, v2: { ...v2, where: 'mcp.servers.' + name },
         // V2 (current docs, desktop) reads mcp.servers only; 1.x reads mcp.<name> only; setup writes both, so either
         // client finds the server — this says which one the opencode on PATH will read
-        cliShape: v2isCurrent ? 'mcp.servers.' + name : version ? 'mcp.' + name : null,
+        cliShape: v2isCurrent ? 'mcp.servers.' + name : cli ? 'mcp.' + name : null,
+        probe: probe ? { ran: probe.ran, connected: probe.connected, detail: probe.detail } : null,
       },
       rule: { path: ag, found: rule },
       skill: { path: skill, found: skillOk },
-      cli: { found: !!version, version },
+      cli: { found: !!cli, version: cli ? cli.version : null, major: cli ? cli.major : null },
       desktop: { path: desktop, found: !!desktop },
+      warn: probe && probe.ran && !probe.connected
+        ? `opencode mcp list does not show "${name}" as connected yet: ${probe.detail || 'no server'} (restart the app / start a new session)`
+        : null,
       action: ready ? 'opencode is set up for this install' + (desktop ? ' (restart the opencode app after a change)' : '')
         : !found ? `no "${name}" MCP server in ${cfg} (run ./setup.sh --opencode yes)`
         : stale.length ? `"${stale[0].where}" points at ${JSON.stringify(stale[0].command)} instead of ${hub} (run ./setup.sh --opencode yes)`

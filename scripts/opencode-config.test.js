@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   configPath, agentsPath, opencodeHome, parseJsonc, upsertMcpEntry, removeMcpEntry, applyRuleBlock, dropRuleBlock, run, BEGIN, END,
-  desktopFound,
+  desktopFound, opencodeVersion, probeMcp,
 } from './opencode-config.mjs';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'vh-opencode-'));
@@ -298,6 +298,56 @@ test('status says which shape the opencode on this machine reads', () => {
     process.env.OPENCODE_BIN = path.join(dir, 'not-there');
     s = status();
     assert.equal(s.cli.found, false); assert.equal(s.mcp.cliShape, null);
+  } finally {
+    if (saved === undefined) delete process.env.OPENCODE_BIN; else process.env.OPENCODE_BIN = saved;
+  }
+});
+
+test('the opencode version is read off the number, whatever the banner looks like', () => {
+  const dir = tmp(), fake = path.join(dir, 'opencode');
+  const withBin = text => {
+    fs.writeFileSync(fake, '#!/bin/sh\n' + text); fs.chmodSync(fake, 0o755);
+    return opencodeVersion(fake);
+  };
+  assert.deepEqual(withBin('echo 1.19.5\n'), { version: '1.19.5', major: 1 });
+  assert.deepEqual(withBin('echo "opencode v2.2.6"\n'), { version: 'opencode v2.2.6', major: 2 });   // the real V2 banner
+  assert.equal(withBin('echo "not a version"\n').major, null);
+  assert.equal(opencodeVersion(path.join(dir, 'not-there')), null);
+});
+
+test('status asks the installed client what it thinks, and the V2 banner is not misread as 1.x', () => {
+  const dir = tmp(), cfg = path.join(dir, 'opencode.json'), ag = path.join(dir, 'AGENTS.md'), sk = path.join(dir, 'skills', 'videohub', 'SKILL.md');
+  const hub = '/opt/videohub', fake = path.join(dir, 'opencode');
+  fs.mkdirSync(path.dirname(sk), { recursive: true }); fs.writeFileSync(sk, 'skill');
+  run(['mcp-add', '--config', cfg, '--command-json', JSON.stringify(['/usr/bin/node', hub + '/server/mcp.js'])]);
+  const rule = path.join(dir, 'rule.md'); fs.writeFileSync(rule, 'rule text');
+  run(['rule-add', '--file', ag, '--rule', rule, '--videohub-dir', hub]);
+  const stub = body => { fs.writeFileSync(fake, '#!/bin/sh\n' + body); fs.chmodSync(fake, 0o755); };
+  const status = () => run(['status', '--config', cfg, '--file', ag, '--skill', sk, '--videohub-dir', hub]);
+  const saved = process.env.OPENCODE_BIN;
+  try {
+    process.env.OPENCODE_BIN = fake;
+    // opencode v2.2.6: version banner with a leading "opencode v", mcp list drawing a box with the server line in it
+    stub('case "$1" in --version) echo "opencode v2.2.6";; mcp) printf "\\033[0m\\n┌  MCP Servers\\n│\\n●  ✓ videohub  connected\\n│      /usr/bin/node /opt/videohub/server/mcp.js\\n│\\n└  1 server(s)\\n";; esac\n');
+    let s = status();
+    assert.equal(s.cli.version, 'opencode v2.2.6'); assert.equal(s.cli.major, 2);
+    assert.equal(s.mcp.cliShape, 'mcp.servers.videohub');   // not "mcp.videohub", which the old parse said
+    assert.equal(s.mcp.probe.ran, true); assert.equal(s.mcp.probe.connected, true);
+    assert.match(s.mcp.probe.detail, /videohub connected/);
+    assert.equal(s.warn, null);
+    // the client says the server failed -> still no hard error, but the warning names it
+    stub('case "$1" in --version) echo "opencode v2.2.6";; mcp) printf "●  ✗ videohub failed\\n   MCP error -32000: Connection closed\\n";; esac\n');
+    s = status();
+    assert.equal(s.mcp.probe.connected, false); assert.match(s.warn, /does not show "videohub" as connected/);
+    assert.equal(s.ready, true);   // the config is fine; the warning is the client's own report
+    // no videohub line at all
+    stub('case "$1" in --version) echo "opencode v2.2.6";; mcp) echo "No MCP servers configured";; esac\n');
+    s = status();
+    assert.equal(s.mcp.probe.connected, false); assert.match(s.mcp.probe.detail, /no MCP servers configured/);
+    // a client that cannot be run at all
+    process.env.OPENCODE_BIN = path.join(dir, 'not-there');
+    s = status();
+    assert.equal(s.cli.found, false); assert.equal(s.mcp.probe.ran, false); assert.equal(s.warn, null);
   } finally {
     if (saved === undefined) delete process.env.OPENCODE_BIN; else process.env.OPENCODE_BIN = saved;
   }

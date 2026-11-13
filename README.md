@@ -104,7 +104,9 @@ each file as `*.videohub-backup`.
 **Two config shapes, one file.** opencode is moving its MCP servers from `mcp.<name>` (1.x, with `"enabled": true`) to
 `mcp.servers.<name>` (V2 — what the docs and the desktop app read now, where `"disabled"` replaces `"enabled"`). Setup
 writes **both**, so the same config works in either version and in both apps; the 1.x CLI simply ignores the extra
-`servers` key. If a future client is strict about the other shape, `./setup.sh --opencode yes --opencode-schema v1` (or
+`servers` key, and the V2 reader ignores the old name instead of listing the server twice. Checked with both: opencode
+**1.19.5** answers `✓ videohub connected` from `mcp.videohub`, opencode **2.2.6** (a V2 build, the code the desktop app
+shares) answers `✓ videohub connected` from `mcp.servers.videohub`. If a future client is strict about the other shape, `./setup.sh --opencode yes --opencode-schema v1` (or
 `v2`) writes only that one, and `uninstall.sh` always removes both.
 
 **One naming difference:** opencode prefixes MCP tools with the server name, so `hub_live` is `videohub_hub_live`,
@@ -127,12 +129,15 @@ In the app: the `/mcps` screen lists `videohub` as connected (or with its error)
 `videohub_hub_live`, `videohub_hub_workspace`, … If the app was installed before this version of VideoHub, run
 `./setup.sh --opencode yes` once — that adds the `mcp.servers.videohub` shape the desktop app reads, and keeps the
 `mcp.videohub` entry the terminal app uses. `npm run opencode:check` reports both (`mcp.v1`, `mcp.v2`) plus whether it
-found the desktop app (`desktop.found`), and `mcp.cliShape` names the shape the `opencode` on your `PATH` reads.
+found the desktop app (`desktop.found`), `cli.version` / `mcp.cliShape` (which shape the `opencode` on your `PATH` reads),
+and `mcp.probe`: it runs `opencode mcp list` itself and repeats what it said — `{"ran":true,"connected":true,
+"detail":"✓ videohub connected"}`, with a `warn` line when the client does not see the server yet.
 
 ### Is it working?
 1. `npm run opencode:check` (or `node scripts/opencode-config.mjs status`) — one JSON line, `"ready": true` when the
-   MCP entry points at **this** folder, the rule block is in `AGENTS.md` and the skill file exists; otherwise `action`
-   says what is missing and which `./setup.sh` flag fixes it.
+   MCP entry (either shape) points at **this** folder, the rule block is in `AGENTS.md` and the skill file exists;
+   otherwise `action` says what is missing and which `./setup.sh` flag fixes it. It also asks the installed client
+   itself (`opencode mcp list`) and puts the answer in `mcp.probe`, so a server that starts but fails is visible here.
 2. `opencode mcp list` — shows the `videohub` server and its connection status; in a session, `/mcp` lists it too
    (MCP servers are connected at start-up, so open opencode **after** setup and after moving the folder). The desktop
    app has the same list on its `/mcps` screen — restart the app first.
