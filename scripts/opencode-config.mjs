@@ -4,16 +4,19 @@
 // The edits are text splices, not a re-serialisation: everything else in the file (other servers, models, permissions,
 // comments, formatting) stays exactly as the user wrote it. A file that cannot be read as JSON/JSONC is never rewritten.
 //
-//   node scripts/opencode-config.mjs mcp-add     [--config <file>] [--name videohub] --command-json '["node","<mcp.js>"]' [--dry-run]
-//   node scripts/opencode-config.mjs mcp-remove  [--config <file>] [--name videohub] [--expect <text>] [--dry-run]
+//   node scripts/opencode-config.mjs mcp-add     [--config <file>] [--name videohub] --command-json '["node","<mcp.js>"]'
+//                                                [--schema both|v1|v2] [--dry-run]
+//   node scripts/opencode-config.mjs mcp-remove  [--config <file>] [--name videohub] [--schema both|v1|v2] [--expect <text>] [--dry-run]
 //   node scripts/opencode-config.mjs rule-add    [--file <AGENTS.md>] --rule <file> --videohub-dir <dir> [--dry-run]
 //   node scripts/opencode-config.mjs rule-remove [--file <AGENTS.md>] [--expect <text>] [--dry-run]
 //   node scripts/opencode-config.mjs status      [--config <file>] [--file <AGENTS.md>] [--skill <dir>] [--videohub-dir <dir>]
+//                                                [--skip-cli to not ask the opencode on PATH for its version]
 //   --config / --file default to the global opencode config; --dry-run prints the plan and writes nothing; status writes
 //   nothing either: it says whether the three pieces are in place for this install.
 // Every mode prints one JSON line: {ok, changed, path, action} (or {ok:false, error}).
 import fs from 'node:fs';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -106,43 +109,95 @@ function indentOf(text, closeStart) {
 }
 const pretty = (value, indent) => JSON.stringify(value, null, 2).split('\n').map((l, i) => (i ? indent + l : l)).join('\n');
 
-// put `entry` under mcp[name], keeping every other byte of the file
-export function upsertMcpEntry(text, name, entry) {
-  const sig = significant(text);
-  if (!sig.length) {   // an empty file: write a fresh config
-    return { text: `{\n  "$schema": "${SCHEMA}",\n  "mcp": {\n    "${name}": ${pretty(entry, '    ')}\n  }\n}\n`, changed: true };
-  }
-  if (sig[0].t !== '{') throw new Error('the config does not start with a JSON object');
-  const rootClose = closing(sig, 0);
-  if (rootClose < 0) throw new Error('the config has an unclosed { — fix it by hand, VideoHub did not touch it');
-  const mcp = propertyValue(sig, 0, 'mcp');
-  if (!mcp) {   // no "mcp" key yet: add it as the first property of the root object
-    const indent = (indentOf(text, sig[rootClose].s) || '') + '  ';
-    const body = `\n${indent}"mcp": {\n${indent}  "${name}": ${pretty(entry, indent + '  ')}\n${indent}}`;
-    return { text: text.slice(0, sig[0].e) + body + (text.slice(sig[0].e).trim() ? ',' : '') + text.slice(sig[0].e), changed: true };
-  }
-  if (sig[mcp.value].t !== '{') throw new Error('"mcp" in the config is not an object — fix it by hand, VideoHub did not touch it');
-  const mcpClose = closing(sig, mcp.value);
-  if (mcpClose < 0) throw new Error('the "mcp" object is not closed — fix it by hand, VideoHub did not touch it');
-  const existing = propertyValue(sig, mcp.value, name);
-  if (existing) {
-    if (sig[existing.value].t !== '{') throw new Error(`"mcp.${name}" in the config is not an object — fix it by hand`);
-    const valueClose = closing(sig, existing.value);
-    if (valueClose < 0) throw new Error(`"mcp.${name}" is not closed — fix it by hand`);
-    let same = false;
-    try { same = JSON.stringify(parseJsonc(text).mcp[name]) === JSON.stringify(entry); } catch { same = false; }
-    if (same) return { text, changed: false };   // already exactly this server: touch nothing
-    const newText = `"${name}": ${pretty(entry, indentOf(text, sig[existing.key].s))}`;
-    return { text: text.slice(0, sig[existing.key].s) + newText + text.slice(sig[valueClose].e), changed: true };
-  }
-  // append the property just after the last thing in the mcp object, so the comma never lands on a line of its own
-  const prev = sig[mcpClose - 1], closeTok = sig[mcpClose];
-  const empty = prev.t === '{' && prev.s === sig[mcp.value].s;
+// opencode changed where servers live: 1.x reads mcp.<name>, the current (V2) config wants mcp.servers.<name> and uses
+// "disabled" instead of "enabled". Setup writes both shapes (the 1.x CLI ignores the extra "servers" key), so one config
+// serves the terminal and the desktop app; --schema narrows it when a client is strict.
+export const MCP_PATH = { v1: ['mcp'], v2: ['mcp', 'servers'] };
+const label = keys => keys.join('.');
+
+// indentation for properties added inside the object at sig[container]; works when that object is still written
+// inline (`"servers": {}`), where its closing brace shares the line with its opening one
+function objectIndent(text, sig, container) {
+  const closeIdx = closing(sig, container);
+  if (closeIdx < 0) throw new Error('the config has an unclosed { — fix it by hand, VideoHub did not touch it');
+  const closeStart = sig[closeIdx].s;
+  const lineStart = text.lastIndexOf('\n', closeStart) + 1;
+  const before = text.slice(lineStart, closeStart);
+  if (/^[ \t]*$/.test(before)) return before;   // closing brace on its own line: that indentation is the answer
+  const openLineStart = text.lastIndexOf('\n', sig[container].s) + 1;
+  return /^[ \t]*/.exec(text.slice(openLineStart))[0];   // inline object: its properties go one level past that line
+}
+
+// insert `"key": value` as the last property of the object opened by sig[container]
+function appendProperty(text, sig, container, key, value) {
+  const closeIdx = closing(sig, container);
+  if (closeIdx < 0) throw new Error('the config has an unclosed { — fix it by hand, VideoHub did not touch it');
+  const prev = sig[closeIdx - 1];
+  const closeTok = sig[closeIdx];
+  const empty = prev.t === '{' && prev.s === sig[container].s;
   const trailingComma = prev.t === ',';
-  const closeIndent = indentOf(text, closeTok.s), indent = closeIndent + '  ';
+  const closeIndent = objectIndent(text, sig, container), indent = closeIndent + '  ';
   const ownLine = text.slice(prev.e, closeTok.s).includes('\n');
-  const addition = (empty || trailingComma ? '' : ',') + `\n${indent}"${name}": ${pretty(entry, indent)}` + (ownLine ? '' : `\n${closeIndent}`);
+  // the comma goes right after the last token, never on a line of its own
+  const addition = (empty || trailingComma ? '' : ',') + `\n${indent}"${key}": ${pretty(value, indent)}` + (ownLine ? '' : `\n${closeIndent}`);
   return { text: text.slice(0, prev.e) + addition + text.slice(prev.e), changed: true };
+}
+
+// the object at keys[0].keys[1]…, or null when it is not there
+function objectAt(text, keys) {
+  const sig = significant(text);
+  if (!sig.length || sig[0].t !== '{') return null;
+  let container = 0;
+  for (const k of keys) {
+    const prop = propertyValue(sig, container, k);
+    if (!prop || sig[prop.value].t !== '{') return null;
+    container = prop.value;
+  }
+  return { sig, container };
+}
+
+// the same, creating the missing objects (`"mcp": {}` as the first property of the root, `"servers": {}` inside it)
+function ensureObject(text, keys) {
+  const found = objectAt(text, keys);
+  if (found) return { ...found, text };
+  const sig = significant(text);
+  if (!sig.length) return { text: '{}', sig: significant('{}'), container: 0 };
+  if (sig[0].t !== '{') throw new Error('the config does not start with a JSON object — fix it by hand, VideoHub did not touch it');
+  for (let n = 1; n <= keys.length; n++) {
+    const path = keys.slice(0, n);
+    if (objectAt(text, path)) continue;
+    const parent = objectAt(text, path.slice(0, -1)) || { sig, container: 0 };
+    const made = appendProperty(text, parent.sig, parent.container, path.at(-1), {});
+    return ensureObject(made.text, keys);
+  }
+  throw new Error('could not find ' + label(keys) + ' in the config');
+}
+
+const atPath = (obj, keys) => keys.reduce((o, k) => (o && typeof o === 'object' ? o[k] : undefined), obj);
+
+// put `entry` under mcp[name] (schema v1) or mcp.servers[name] (schema v2), keeping every other byte of the file
+export function upsertMcpEntry(text, name, entry, schema = 'v1') {
+  const keys = MCP_PATH[schema];
+  if (!keys) throw new Error('unknown schema: ' + schema);
+  if (!text.trim()) {   // an empty file: start from a config that only names the schema, then add the block normally
+    const out = upsertMcpEntry(`{\n  "$schema": "${SCHEMA}"\n}\n`, name, entry, schema);
+    return { text: out.text, changed: true };
+  }
+  const ensured = ensureObject(text, keys);
+  let current = ensured.text;
+  const sig = ensured.sig, container = ensured.container;
+  const existing = propertyValue(sig, container, name);
+  if (existing) {
+    if (sig[existing.value].t !== '{') throw new Error(`"${label(keys)}.${name}" in the config is not an object — fix it by hand`);
+    const valueClose = closing(sig, existing.value);
+    if (valueClose < 0) throw new Error(`"${label(keys)}.${name}" is not closed — fix it by hand`);
+    let same = false;
+    try { same = JSON.stringify(atPath(parseJsonc(current), [...keys, name])) === JSON.stringify(entry); } catch { same = false; }
+    if (same) return { text: current, changed: false };   // already exactly this server: touch nothing
+    const newText = `"${name}": ${pretty(entry, indentOf(current, sig[existing.key].s))}`;
+    return { text: current.slice(0, sig[existing.key].s) + newText + current.slice(sig[valueClose].e), changed: true };
+  }
+  return appendProperty(current, sig, container, name, entry);
 }
 
 // remove the property `key` from the object opened by sig[container] (with the comma that held it and, when it had
@@ -172,19 +227,23 @@ function dropProperty(text, key, container) {
   return { text: text.slice(0, start) + text.slice(end), changed: true };
 }
 
-// take mcp[name] out again; the mcp block itself goes when it is left empty (so uninstall gives back the original file)
-export function removeMcpEntry(text, name) {
-  const sig = significant(text);
-  if (!sig.length || sig[0].t !== '{') return { text, changed: false };
-  const mcp = propertyValue(sig, 0, 'mcp');
-  if (!mcp || sig[mcp.value].t !== '{') return { text, changed: false };
-  const first = dropProperty(text, name, mcp.value);
-  if (!first.changed) return first.text === text ? { text, changed: false } : first;
+// take the server out of one shape; blocks left empty ("servers", "mcp") go too, so uninstall gives the file back
+export function removeMcpEntry(text, name, schema = 'v1') {
+  const keys = MCP_PATH[schema];
+  if (!keys) throw new Error('unknown schema: ' + schema);
+  const found = objectAt(text, keys);
+  if (!found) return { text, changed: false };
+  const first = dropProperty(text, name, found.container);
+  if (!first.changed) return { text, changed: false };
   let out = first.text;
-  try {
-    const j = parseJsonc(out);
-    if (j.mcp && typeof j.mcp === 'object' && Object.keys(j.mcp).length === 0) out = dropProperty(out, 'mcp', 0).text || out;
-  } catch { /* leave it: an unreadable file is never rewritten further */ }
+  for (let n = keys.length; n >= 1; n--) {   // innermost first: "servers", then "mcp"
+    const path = keys.slice(0, n);
+    let parsed; try { parsed = parseJsonc(out); } catch { break; }
+    const obj = atPath(parsed, path);
+    if (!obj || typeof obj !== 'object' || Object.keys(obj).length) continue;
+    const parent = objectAt(out, path.slice(0, -1));
+    if (parent) out = dropProperty(out, path.at(-1), parent.container).text || out;
+  }
   return { text: out, changed: true };
 }
 
@@ -201,13 +260,41 @@ export function dropRuleBlock(text, begin = BEGIN, end = END) {
 }
 
 // ---- the command line setup.sh / uninstall.sh use ---------------------------------------------------------
+// ---- the desktop app: it reads the very same ~/.config/opencode, but a GUI launch has no shell PATH, so the server's
+// command must be absolute (setup writes the absolute node path) and running servers only pick up changes at restart
+export function desktopFound(env = process.env, exists = fs.existsSync, readdir = fs.readdirSync) {
+  const home = env.HOME || os.homedir();
+  const data = env.XDG_DATA_HOME || path.join(home, '.local', 'share');
+  const known = [
+    path.join(data, 'applications', 'opencode-desktop.desktop'),
+    path.join(home, '.local', 'share', 'applications', 'opencode-desktop.desktop'),
+    '/usr/share/applications/opencode-desktop.desktop',
+    '/usr/local/share/applications/opencode-desktop.desktop',
+    path.join(home, '.local', 'bin', 'opencode-desktop'),
+    '/usr/bin/opencode-desktop', '/usr/local/bin/opencode-desktop', '/opt/opencode-desktop/opencode-desktop',
+  ];
+  const loose = [];
+  for (const dir of [path.join(home, 'Applications'), path.join(home, 'Downloads'), '/opt']) {
+    try { for (const f of readdir(dir)) if (/^opencode.*\.appimage$/i.test(f)) loose.push(path.join(dir, f)); } catch { /* no such folder */ }
+  }
+  return [...known, ...loose].find(p => exists(p)) || null;
+}
+
+// which opencode this machine runs, so status can name the config shape it reads (1.x: mcp.<name>, V2: mcp.servers.<name>)
+export function opencodeVersion(bin = process.env.OPENCODE_BIN || 'opencode') {
+  try {
+    const out = execFileSync(bin, ['--version'], { timeout: 4000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    return String(out).trim().split('\n').pop().trim() || null;
+  } catch { return null; }
+}
+
 export function run(argv) {
   const args = {}; const mode = argv[0];
   for (let i = 1; i < argv.length; i++) {
     const a = argv[i];
     if (!a.startsWith('--')) throw new Error('unexpected argument: ' + a);
     const k = a.slice(2);
-    if (k === 'dry-run') args[k] = true;
+    if (k === 'dry-run' || k === 'skip-cli') args[k] = true;
     else { if (i + 1 >= argv.length) throw new Error(a + ' needs a value'); args[k] = argv[++i]; }
   }
   const write = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
@@ -218,23 +305,31 @@ export function run(argv) {
   if (mode === 'mcp-add' || mode === 'mcp-remove') {
     const file = args.config || configPath();
     const before = read(file);
+    const schema = args.schema || 'both';
+    if (schema !== 'both' && !MCP_PATH[schema]) throw new Error('--schema must be both, v1 or v2');
+    const shapes = schema === 'both' ? ['v1', 'v2'] : [schema];
+    const where = shapes.map(sh => label([...MCP_PATH[sh], name])).join(' and ');
     if (mode === 'mcp-add') {
       let command; try { command = JSON.parse(args['command-json'] || '[]'); } catch { throw new Error('--command-json must be a JSON array'); }
       if (!Array.isArray(command) || !command.length) throw new Error('--command-json must be a non-empty JSON array');
-      let out;
-      try { out = upsertMcpEntry(before, name, { type: 'local', command, enabled: true }); }
-      catch (e) { throw new Error(file + ': ' + e.message); }
-      try { parseJsonc(out.text); } catch (e) { throw new Error('the edit would have left ' + file + ' unreadable (' + e.message + ') — nothing was written'); }
-      if (!out.changed) return done(file, false, `mcp server "${name}" is already there`);
-      if (!args['dry-run']) write(file, out.text);
-      return done(file, true, (before ? 'added' : 'created') + ` mcp server "${name}"`);
+      // 1.x: mcp.<name> with "enabled"; V2 (current docs, desktop app): mcp.servers.<name>, where "disabled" replaces it
+      const entries = { v1: { type: 'local', command, enabled: true }, v2: { type: 'local', command } };
+      let text = before, changed = false;
+      try {
+        for (const sh of shapes) { const out = upsertMcpEntry(text, name, entries[sh], sh); text = out.text; changed = changed || out.changed; }
+      } catch (e) { throw new Error(file + ': ' + e.message); }
+      try { parseJsonc(text); } catch (e) { throw new Error('the edit would have left ' + file + ' unreadable (' + e.message + ') — nothing was written'); }
+      if (!changed) return done(file, false, `mcp server "${name}" is already there (${where})`);
+      if (!args['dry-run']) write(file, text);
+      return done(file, true, (before ? 'added' : 'created') + ` mcp server "${name}" (${where})`, { schema });
     }
     if (args.expect && !before.includes(args.expect)) return done(file, false, 'left alone (not this install)');
-    const out = removeMcpEntry(before, name);
-    if (!out.changed) return done(file, false, `no mcp server "${name}" in it`);
-    try { parseJsonc(out.text); } catch (e) { throw new Error('the edit would have left ' + file + ' unreadable (' + e.message + ') — nothing was written'); }
-    if (!args['dry-run']) write(file, out.text);
-    return done(file, true, `removed mcp server "${name}"`);
+    let text = before, changed = false;
+    for (const sh of shapes) { const out = removeMcpEntry(text, name, sh); text = out.text; changed = changed || out.changed; }
+    if (!changed) return done(file, false, `no mcp server "${name}" in it`);
+    try { parseJsonc(text); } catch (e) { throw new Error('the edit would have left ' + file + ' unreadable (' + e.message + ') — nothing was written'); }
+    if (!args['dry-run']) write(file, text);
+    return done(file, true, `removed mcp server "${name}" (${where})`);
   }
 
   if (mode === 'rule-add' || mode === 'rule-remove') {
@@ -261,22 +356,53 @@ export function run(argv) {
     const cfg = args.config || configPath(), ag = args.file || agentsPath();
     const skill = args.skill || path.join(opencodeHome(), 'skills', name, 'SKILL.md');
     const cfgText = read(cfg), agText = read(ag);
-    let entry = null, parseError = null;
-    try { if (cfgText) entry = ((parseJsonc(cfgText).mcp) || {})[name] || null; } catch (e) { parseError = e.message; }
-    const command = Array.isArray(entry?.command) ? entry.command : null;
-    const mcp = !!entry && entry.type === 'local';
-    const pointsHere = !!command && command.some(c => String(c).split('\\').join('/').startsWith(hub.split('\\').join('/')));
+    let parsed = null, parseError = null;
+    try { if (cfgText) parsed = parseJsonc(cfgText); } catch (e) { parseError = e.message; }
+    const hubKey = hub.split('\\').join('/');
+    const shapeOf = sh => {
+      const entry = parsed ? atPath(parsed, [...MCP_PATH[sh], name]) : undefined;
+      const local = !!entry && entry.type === 'local';
+      const command = local && Array.isArray(entry.command) ? entry.command : null;
+      return {
+        where: label([...MCP_PATH[sh], name]),
+        found: local,
+        command,
+        pointsHere: !!command && command.some(c => String(c).split('\\').join('/').startsWith(hubKey)),
+        enabled: local && (sh === 'v1' ? entry.enabled !== false : entry.disabled !== true),
+      };
+    };
+    const v1 = shapeOf('v1'), v2 = shapeOf('v2');
+    const present = [v1, v2].filter(x => x.found);
+    const stale = present.filter(x => !x.pointsHere);   // an entry left over from another folder or another install
+    const found = present.length > 0;
+    const pointsHere = found && stale.length === 0;
+    const active = present.find(x => x.pointsHere) || present[0] || null;   // the one opencode would run
+    const off = present.filter(x => !x.enabled);                             // "enabled": false / "disabled": true
+    const enabled = found && off.length === 0;
     const rule = agText.includes(BEGIN);
     const skillOk = fs.existsSync(skill);
-    const ready = mcp && pointsHere && rule && skillOk;
+    const ready = pointsHere && enabled && rule && skillOk;
+    const desktop = desktopFound();
+    const version = args['skip-cli'] ? null : opencodeVersion();
+    const v2isCurrent = !!version && /^\s*2\./.test(version);
     return {
       ok: true, ready, hub,
-      mcp: { path: cfg, found: mcp, command, pointsHere, enabled: entry?.enabled !== false, error: parseError },
+      mcp: {
+        path: cfg, error: parseError, found, command: active ? active.command : null, pointsHere, enabled,
+        shape: active ? active.where : null,
+        v1: { ...v1, where: 'mcp.' + name }, v2: { ...v2, where: 'mcp.servers.' + name },
+        // V2 (current docs, desktop) reads mcp.servers only; 1.x reads mcp.<name> only; setup writes both, so either
+        // client finds the server — this says which one the opencode on PATH will read
+        cliShape: v2isCurrent ? 'mcp.servers.' + name : version ? 'mcp.' + name : null,
+      },
       rule: { path: ag, found: rule },
       skill: { path: skill, found: skillOk },
-      action: ready ? 'opencode is set up for this install'
-        : !mcp ? `no "${name}" MCP server in ${cfg} (run ./setup.sh --opencode yes)`
-        : !pointsHere ? `"${name}" points at ${JSON.stringify(command)} instead of ${hub} (run ./setup.sh --opencode yes)`
+      cli: { found: !!version, version },
+      desktop: { path: desktop, found: !!desktop },
+      action: ready ? 'opencode is set up for this install' + (desktop ? ' (restart the opencode app after a change)' : '')
+        : !found ? `no "${name}" MCP server in ${cfg} (run ./setup.sh --opencode yes)`
+        : stale.length ? `"${stale[0].where}" points at ${JSON.stringify(stale[0].command)} instead of ${hub} (run ./setup.sh --opencode yes)`
+        : off.length ? `"${off[0].where}" is switched off in ${cfg} (set "enabled": true / remove "disabled")`
         : !rule ? `no VideoHub rule in ${ag} (run ./setup.sh --opencode yes)`
         : `no skill file at ${skill} (run ./setup.sh --opencode yes)`,
     };

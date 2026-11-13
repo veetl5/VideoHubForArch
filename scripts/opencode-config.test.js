@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   configPath, agentsPath, opencodeHome, parseJsonc, upsertMcpEntry, removeMcpEntry, applyRuleBlock, dropRuleBlock, run, BEGIN, END,
+  desktopFound,
 } from './opencode-config.mjs';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'vh-opencode-'));
@@ -206,6 +207,114 @@ test('status says what is missing, and when everything is in place', () => {
   run(['mcp-add', '--config', cfg, '--command-json', JSON.stringify(['/usr/bin/node', '/elsewhere/server/mcp.js'])]);
   s = status();
   assert.equal(s.mcp.pointsHere, false); assert.equal(s.ready, false); assert.match(s.action, /instead of \/opt\/videohub/);
+});
+
+test('mcp-add writes both config shapes: mcp.videohub (1.x) and mcp.servers.videohub (V2, desktop)', () => {
+  const dir = tmp(), cfg = path.join(dir, 'opencode.json');
+  const cmd = ['/usr/bin/node', '/opt/videohub/server/mcp.js'];
+  const r = run(['mcp-add', '--config', cfg, '--command-json', JSON.stringify(cmd)]);
+  assert.equal(r.changed, true);
+  const j = parseJsonc(fs.readFileSync(cfg, 'utf8'));
+  assert.deepEqual(j.mcp.videohub, { type: 'local', command: cmd, enabled: true });   // 1.x keeps "enabled"
+  assert.deepEqual(j.mcp.servers.videohub, { type: 'local', command: cmd });          // V2: "disabled" instead, so none
+  assert.ok(!('enabled' in j.mcp.servers.videohub));
+  assert.ok(!('servers' in j.mcp.videohub));
+  // running it again changes nothing at all
+  const before = fs.readFileSync(cfg, 'utf8');
+  assert.equal(run(['mcp-add', '--config', cfg, '--command-json', JSON.stringify(cmd)]).changed, false);
+  assert.equal(fs.readFileSync(cfg, 'utf8'), before);
+  // an older VideoHub entry (1.x only) gains the V2 shape without losing its own
+  fs.writeFileSync(cfg, JSON.stringify({ mcp: { videohub: { type: 'local', command: cmd, enabled: true } } }));
+  assert.equal(run(['mcp-add', '--config', cfg, '--command-json', JSON.stringify(cmd)]).changed, true);
+  assert.deepEqual(parseJsonc(fs.readFileSync(cfg, 'utf8')).mcp.servers.videohub, { type: 'local', command: cmd });
+});
+
+test('mcp-add --schema picks one shape, and a bad one fails', () => {
+  const dir = tmp(), cfg = path.join(dir, 'opencode.json');
+  const cmd = ['/usr/bin/node', '/opt/videohub/server/mcp.js'];
+  run(['mcp-add', '--config', cfg, '--command-json', JSON.stringify(cmd), '--schema', 'v2']);
+  let j = parseJsonc(fs.readFileSync(cfg, 'utf8'));
+  assert.deepEqual(Object.keys(j.mcp), ['servers']);
+  assert.equal(run(['mcp-add', '--config', cfg, '--command-json', JSON.stringify(cmd), '--schema', 'v1']).changed, true);
+  j = parseJsonc(fs.readFileSync(cfg, 'utf8'));
+  assert.deepEqual(j.mcp.videohub, { type: 'local', command: cmd, enabled: true });
+  assert.throws(() => run(['mcp-add', '--config', cfg, '--command-json', JSON.stringify(cmd), '--schema', 'v3']), /schema/);
+});
+
+test('mcp-remove takes the server out of both shapes and leaves nothing empty behind', () => {
+  const dir = tmp(), cfg = path.join(dir, 'opencode.json');
+  const cmd = ['/usr/bin/node', '/opt/videohub/server/mcp.js'];
+  fs.writeFileSync(cfg, `{\n  // mine\n  "model": "x/y",\n  "mcp": {\n    "other": { "type": "local", "command": ["npx","other"] }\n  }\n}\n`);
+  const original = fs.readFileSync(cfg, 'utf8');
+  run(['mcp-add', '--config', cfg, '--command-json', JSON.stringify(cmd)]);
+  run(['mcp-remove', '--config', cfg]);
+  assert.equal(fs.readFileSync(cfg, 'utf8'), original);   // the user's file comes back byte for byte
+  // V2 only: removing it drops the "servers" block and the now empty "mcp" too
+  run(['mcp-add', '--config', cfg, '--command-json', JSON.stringify(cmd), '--schema', 'v2']);
+  run(['mcp-remove', '--config', cfg]);
+  assert.equal(fs.readFileSync(cfg, 'utf8'), original);
+  assert.ok(!fs.readFileSync(cfg, 'utf8').includes('"servers"'));
+});
+
+test('status sees a V2-only entry, and calls out a shape that points at another folder', () => {
+  const dir = tmp(), cfg = path.join(dir, 'opencode.json'), ag = path.join(dir, 'AGENTS.md'), sk = path.join(dir, 'skills', 'videohub', 'SKILL.md'), rule = path.join(dir, 'rule.md');
+  const hub = '/opt/videohub', status = () => run(['status', '--config', cfg, '--file', ag, '--skill', sk, '--videohub-dir', hub, '--skip-cli']);
+  fs.writeFileSync(rule, 'rule text'); fs.mkdirSync(path.dirname(sk), { recursive: true }); fs.writeFileSync(sk, 'skill');
+  run(['rule-add', '--file', ag, '--rule', rule, '--videohub-dir', hub]);
+  run(['mcp-add', '--config', cfg, '--command-json', JSON.stringify(['/usr/bin/node', hub + '/server/mcp.js']), '--schema', 'v2']);
+  let s = status();
+  assert.equal(s.mcp.found, true); assert.equal(s.mcp.v1.found, false); assert.equal(s.mcp.v2.found, true);
+  assert.equal(s.mcp.shape, 'mcp.servers.videohub'); assert.equal(s.ready, true);
+  // the 1.x shape left behind by another copy is stale: status must not call that ready
+  fs.writeFileSync(cfg, JSON.stringify({ mcp: {
+    videohub: { type: 'local', command: ['/usr/bin/node', '/elsewhere/server/mcp.js'], enabled: true },
+    servers: { videohub: { type: 'local', command: ['/usr/bin/node', hub + '/server/mcp.js'] } },
+  } }));
+  s = status();
+  assert.equal(s.mcp.pointsHere, false); assert.equal(s.ready, false);
+  assert.match(s.action, /mcp\.videohub.*instead of \/opt\/videohub/);
+  // a V2 entry switched off
+  fs.writeFileSync(cfg, JSON.stringify({ mcp: { servers: { videohub: { type: 'local', command: ['/usr/bin/node', hub + '/server/mcp.js'], disabled: true } } } }));
+  s = status();
+  assert.equal(s.mcp.found, true); assert.equal(s.ready, false); assert.match(s.action, /switched off/);
+});
+
+test('status says which shape the opencode on this machine reads', () => {
+  const dir = tmp(), cfg = path.join(dir, 'opencode.json'), ag = path.join(dir, 'AGENTS.md'), sk = path.join(dir, 'skills', 'videohub', 'SKILL.md');
+  const hub = '/opt/videohub';
+  fs.mkdirSync(path.dirname(sk), { recursive: true }); fs.writeFileSync(sk, 'skill');
+  run(['mcp-add', '--config', cfg, '--command-json', JSON.stringify(['/usr/bin/node', hub + '/server/mcp.js'])]);
+  const fake = path.join(dir, 'opencode');
+  const status = () => run(['status', '--config', cfg, '--file', ag, '--skill', sk, '--videohub-dir', hub]);
+  fs.writeFileSync(fake, '#!/bin/sh\necho 1.19.5\n'); fs.chmodSync(fake, 0o755);
+  const saved = process.env.OPENCODE_BIN;
+  try {
+    process.env.OPENCODE_BIN = fake;
+    let s = status();
+    assert.equal(s.cli.version, '1.19.5'); assert.equal(s.mcp.cliShape, 'mcp.videohub');
+    fs.writeFileSync(fake, '#!/bin/sh\necho 2.0.0\n'); fs.chmodSync(fake, 0o755);
+    s = status();
+    assert.equal(s.cli.version, '2.0.0'); assert.equal(s.mcp.cliShape, 'mcp.servers.videohub');
+    process.env.OPENCODE_BIN = path.join(dir, 'not-there');
+    s = status();
+    assert.equal(s.cli.found, false); assert.equal(s.mcp.cliShape, null);
+  } finally {
+    if (saved === undefined) delete process.env.OPENCODE_BIN; else process.env.OPENCODE_BIN = saved;
+  }
+});
+
+test('the desktop app is recognised by its launcher, wherever the package put it', () => {
+  const home = tmp(), env = { HOME: home };
+  assert.equal(desktopFound(env), null);
+  fs.mkdirSync(path.join(home, '.local', 'share', 'applications'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.local', 'share', 'applications', 'opencode-desktop.desktop'), '[Desktop Entry]');
+  assert.match(desktopFound(env), /opencode-desktop\.desktop$/);
+  const home2 = tmp(), env2 = { HOME: home2 };
+  fs.mkdirSync(path.join(home2, 'Applications'), { recursive: true });
+  fs.writeFileSync(path.join(home2, 'Applications', 'opencode-1.2.3.AppImage'), '');
+  assert.match(desktopFound(env2), /opencode-1\.2\.3\.AppImage$/);
+  const home3 = tmp(), env3 = { HOME: home3 };
+  assert.match(desktopFound(env3, p => p === '/usr/bin/opencode-desktop', () => []), /\/usr\/bin\/opencode-desktop$/);
 });
 
 test('an unknown mode fails loudly', () => {

@@ -40,8 +40,9 @@ whole film to check one fix.
   Claude, which makes the variants; annotate a variant, add the final text in code.
 - **Agent tools (MCP)** — `hub_live`, `hub_notes`, `hub_note_update`, `hub_render`, `hub_job`, `hub_project`, `hub_workspace`,
   `hub_register_version`, `hub_cleanup`, `hub_thumb_*`; the same tools work from a shell (`node server/cli.js`).
-- **Claude Code and opencode** — setup registers the MCP server, the review rule and the skill for both (opencode shows
-  the tools as `videohub_hub_*`); see [Works with opencode](#works-with-opencode).
+- **Claude Code and opencode** — setup registers the MCP server, the review rule and the skill for both, for the
+  terminal app and for the opencode desktop app (opencode shows the tools as `videohub_hub_*`); see
+  [Works with opencode](#works-with-opencode).
 
 ![Projects](docs/screenshots/projects.png)
 
@@ -92,7 +93,7 @@ Claude Code and [opencode](https://opencode.ai) both work; `setup.sh` sets up wh
 
 | What | Where |
 |---|---|
-| the MCP server `videohub` (`type: "local"`, `command: ["node", "<VideoHub>/server/mcp.js"]`) | `~/.config/opencode/opencode.json` (or `opencode.jsonc` if you already use one) |
+| the MCP server `videohub` (`type: "local"`, `command: ["<node>", "<VideoHub>/server/mcp.js"]`), written as both `mcp.videohub` (opencode 1.x) and `mcp.servers.videohub` (V2, the desktop app) | `~/.config/opencode/opencode.json` (or `opencode.jsonc` if you already use one) |
 | the review-before-render rule, between `<!-- videohub:begin/end -->` markers | `~/.config/opencode/AGENTS.md` |
 | the `videohub` skill (with this install's path filled in) | `~/.config/opencode/skills/videohub/SKILL.md` |
 
@@ -100,17 +101,41 @@ Both files are edited in place: your other servers, models, permissions and comm
 file VideoHub cannot read is never rewritten (setup then prints the snippet to add by hand). A backup is kept next to
 each file as `*.videohub-backup`.
 
+**Two config shapes, one file.** opencode is moving its MCP servers from `mcp.<name>` (1.x, with `"enabled": true`) to
+`mcp.servers.<name>` (V2 — what the docs and the desktop app read now, where `"disabled"` replaces `"enabled"`). Setup
+writes **both**, so the same config works in either version and in both apps; the 1.x CLI simply ignores the extra
+`servers` key. If a future client is strict about the other shape, `./setup.sh --opencode yes --opencode-schema v1` (or
+`v2`) writes only that one, and `uninstall.sh` always removes both.
+
 **One naming difference:** opencode prefixes MCP tools with the server name, so `hub_live` is `videohub_hub_live`,
 `hub_notes` is `videohub_hub_notes`, and so on. The skill and the rule say this, so the agent picks the right names.
 Without the MCP tools (any other agent), the same commands run from the shell:
 `node "<VideoHub>/server/cli.js" hub_live '{"project":"<film folder>"}'`.
+
+### The desktop app
+The opencode desktop app (https://opencode.ai/download — `.deb`, `.rpm` or AppImage on Arch) keeps its settings in the
+same `~/.config/opencode/`: the `opencode.json` and `AGENTS.md` that setup writes, and the same `skills/videohub` folder.
+Nothing extra to install for VideoHub, with two things to know:
+
+- **Restart the app after setup** (or after moving this folder): MCP servers are connected when the app starts, so an
+  app that was already open keeps the old entry. Quit it completely and open it again.
+- **The command is absolute** (`/usr/bin/node` …): a menu or AppImage launch has no shell `PATH`, and `node` alone would
+  not be found. Setup writes `command -v node`; if you switch Node (nvm, a new `/usr/bin/node`), re-run
+  `./setup.sh --opencode yes`.
+
+In the app: the `/mcps` screen lists `videohub` as connected (or with its error), and a chat can call the tools as
+`videohub_hub_live`, `videohub_hub_workspace`, … If the app was installed before this version of VideoHub, run
+`./setup.sh --opencode yes` once — that adds the `mcp.servers.videohub` shape the desktop app reads, and keeps the
+`mcp.videohub` entry the terminal app uses. `npm run opencode:check` reports both (`mcp.v1`, `mcp.v2`) plus whether it
+found the desktop app (`desktop.found`), and `mcp.cliShape` names the shape the `opencode` on your `PATH` reads.
 
 ### Is it working?
 1. `npm run opencode:check` (or `node scripts/opencode-config.mjs status`) — one JSON line, `"ready": true` when the
    MCP entry points at **this** folder, the rule block is in `AGENTS.md` and the skill file exists; otherwise `action`
    says what is missing and which `./setup.sh` flag fixes it.
 2. `opencode mcp list` — shows the `videohub` server and its connection status; in a session, `/mcp` lists it too
-   (MCP servers are connected at start-up, so open opencode **after** setup and after moving the folder).
+   (MCP servers are connected at start-up, so open opencode **after** setup and after moving the folder). The desktop
+   app has the same list on its `/mcps` screen — restart the app first.
 3. `node server/mcp-selftest.js` — starts the same server the way opencode does and prints the 12 tools it exposes
    (`hub_live`, `hub_workspace`, …), so a broken server is visible without a chat.
 4. In an opencode session, ask: *"Use the videohub_hub_workspace tool and tell me where my films go."* It should answer
@@ -164,9 +189,15 @@ outputs folder and this folder stay; delete them yourself if you want.
 - **Claude does not see `hub_*` tools** — start a new Claude Code session; `claude mcp list` should show `videohub`.
   Run `./setup.sh` again if not.
 - **opencode does not see the tools** — start a new opencode session (it reads its config at start-up); the `mcp` block
-  in `~/.config/opencode/opencode.json` should have `videohub` with `"type": "local"`. The tool names there carry the
-  server prefix: `videohub_hub_live`, `videohub_hub_notes`, … Run `./setup.sh --opencode yes` again if the block is
-  missing; the previous file is kept as `opencode.json.videohub-backup`.
+  in `~/.config/opencode/opencode.json` should have `videohub` with `"type": "local"` under `mcp.videohub` (1.x) or
+  `mcp.servers.videohub` (V2). The tool names there carry the server prefix: `videohub_hub_live`, `videohub_hub_notes`,
+  … Run `./setup.sh --opencode yes` again if a block is missing; the previous file is kept as
+  `opencode.json.videohub-backup`.
+- **The opencode desktop app does not see the tools** — it reads the same file but only at start-up: quit it fully and
+  open it again, then look at `/mcps`. If `videohub` is missing there, the app is a V2 build and the file has only the
+  old shape — `./setup.sh --opencode yes` adds `mcp.servers.videohub` (`--opencode-schema v2` writes only that). If the
+  entry shows a connection error, `npm run opencode:check` and `node server/mcp-selftest.js` (from this folder) say
+  whether the path and the server are fine.
 - **opencode ignores the review rule** — it reads `~/.config/opencode/AGENTS.md` (and only falls back to
   `~/.claude/CLAUDE.md` when that file does not exist). `./setup.sh --opencode yes` writes the block there.
 - **"This folder is not a project VideoHub knows"** — put the film inside a watched folder or add its parent folder

@@ -10,26 +10,31 @@
 #   --gpu-encoder ask|yes|no    render with the graphics card's video encoder when it has one (recommended: yes)
 #   --global-rule ask|yes|no    add the "review before rendering" rule to ~/.claude/CLAUDE.md (recommended: yes)
 #   --opencode ask|yes|no       set VideoHub up for opencode too: MCP server, rule and skill (recommended: yes when
-#                               opencode is installed; no when it is not)
+#                               opencode is installed; no when it is not). Covers the terminal app and the desktop app
+#   --opencode-schema both|v1|v2  which opencode config shape to write: "both" (default) puts the server under
+#                               mcp.videohub (opencode 1.x) and mcp.servers.videohub (current V2 + desktop app);
+#                               v1 / v2 write only that one, for a client that rejects the other
 #   --launcher ask|yes|no       application-menu entry "VideoHub" (recommended: yes)
 #   --startup ask|yes|no        start VideoHub (server only, no window) when you log in (recommended: no)
 #   --example ask|yes|no        add the example film (recommended: yes)
 set -u
 hub="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-DRY=0; YES=0; WORKSPACE=""; WATCH=ask; GPU=ask; RULE=ask; OPENCODE=ask; LAUNCHER=ask; STARTUP=ask; EXAMPLE=ask
+DRY=0; YES=0; WORKSPACE=""; WATCH=ask; GPU=ask; RULE=ask; OPENCODE=ask; OCSCHEMA=both; LAUNCHER=ask; STARTUP=ask; EXAMPLE=ask
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1;; --yes|-y) YES=1;;
     --workspace) WORKSPACE="${2:-}"; shift;;
     --watch-found) WATCH="${2:-ask}"; shift;; --gpu-encoder) GPU="${2:-ask}"; shift;;
     --global-rule) RULE="${2:-ask}"; shift;; --opencode) OPENCODE="${2:-ask}"; shift;;
+    --opencode-schema) OCSCHEMA="${2:-both}"; shift;;
     --launcher) LAUNCHER="${2:-ask}"; shift;;
     --startup) STARTUP="${2:-ask}"; shift;; --example) EXAMPLE="${2:-ask}"; shift;;
-    -h|--help) sed -n 2,16p "$0"; exit 0;;
+    -h|--help) sed -n 2,19p "$0"; exit 0;;
     *) echo "Unknown option: $1 (see --help)" >&2; exit 2;;
   esac; shift
 done
 [ "$DRY" = 1 ] && YES=1
+case "$OCSCHEMA" in both|v1|v2) ;; *) echo "--opencode-schema must be both, v1 or v2" >&2; exit 2;; esac
 
 c() { printf '\033[%sm%s\033[0m\n' "$1" "$2"; }
 say() { c 32 "$1"; }; warn() { c 33 "$1"; }; err() { c 31 "$1"; }; plan() { c 36 "  [dry run] would: $1"; }
@@ -69,9 +74,14 @@ claude="$(command -v claude || true)"
 if [ -n "$claude" ]; then say "Claude Code: ok ($claude)"
 else warn "Claude Code was not found. VideoHub works without it, but Claude Code is what writes the films: https://claude.com/claude-code"; fi
 opencode_bin="$(command -v opencode || true)"
+# the desktop app has no CLI on PATH; it reads the very same ~/.config/opencode/opencode.json
+oc_desktop="$(node -e 'import(process.argv[1]).then(m=>{const p=m.desktopFound();if(p)console.log(p)})' "file://$hub/scripts/opencode-config.mjs" 2>/dev/null || true)"
+[ -z "$oc_desktop" ] && oc_desktop="$(command -v opencode-desktop || true)"
 if [ -n "$opencode_bin" ]; then say "opencode: ok ($opencode_bin)"
 elif [ "$OPENCODE" = yes ]; then warn "opencode was not found; its files are written anyway (https://opencode.ai)"
+elif [ -n "$oc_desktop" ]; then say "opencode: desktop app only (no CLI on PATH)"
 else say "opencode: not installed (optional; --opencode yes sets it up anyway)"; fi
+[ -n "$oc_desktop" ] && say "opencode Desktop: ok ($oc_desktop) — it reads the same config as the terminal"
 
 # 2. packages
 if [ "$DRY" = 1 ]; then plan "npm install in $hub"
@@ -150,21 +160,25 @@ ocjs() { printf '%s' "${1:-}" | node -e 'let s="";process.stdin.on("data",d=>s+=
 want="$OPENCODE"
 if [ "$want" = ask ]; then
   if [ -n "$opencode_bin" ]; then want="$(decide ask "Also set VideoHub up for opencode? (MCP server, the review rule and the skill)" yes)"
+  elif [ -n "$oc_desktop" ]; then want="$(decide ask "Also set VideoHub up for the opencode desktop app? (MCP server, the review rule and the skill)" yes)"
   else want=no; fi
 fi
 if [ "$want" = yes ]; then
   ocn="$(command -v node)"
   if [ "$DRY" = 1 ]; then
-    plan "add the MCP server \"videohub\" to $ocCfg (command: \"$ocn\" \"$mcp\")"
+    case "$OCSCHEMA" in
+      both) plan "add the MCP server \"videohub\" to $ocCfg as mcp.videohub and mcp.servers.videohub (command: \"$ocn\" \"$mcp\")";;
+      *) plan "add the MCP server \"videohub\" to $ocCfg as mcp$( [ "$OCSCHEMA" = v2 ] && echo .servers ).videohub (command: \"$ocn\" \"$mcp\")";;
+    esac
     plan "copy skill/videohub to $ocHome/skills/videohub"
     if [ "$rule_on" = yes ]; then plan "write the review rule into $ocAgents"; fi
   else
     mkdir -p "$ocHome"; [ -f "$ocCfg" ] && cp "$ocCfg" "$ocCfg.videohub-backup"
     cmds="$(node -e 'console.log(JSON.stringify(process.argv.slice(1)))' "$ocn" "$mcp")"
-    r="$(node "$hub/scripts/opencode-config.mjs" mcp-add --config "$ocCfg" --command-json "$cmds" 2>/dev/null || true)"
+    r="$(node "$hub/scripts/opencode-config.mjs" mcp-add --config "$ocCfg" --command-json "$cmds" --schema "$OCSCHEMA" 2>/dev/null || true)"
     act="$(ocjs "$r")"
     case "$act" in
-      error:*) err "opencode config: ${act#error: }"; todo+=("Add the MCP server to \"$ocCfg\" by hand: {\"mcp\": {\"videohub\": {\"type\": \"local\", \"command\": [\"node\", \"$mcp\"], \"enabled\": true }}}");;
+      error:*) err "opencode config: ${act#error: }"; todo+=("Add the MCP server to \"$ocCfg\" by hand: {\"mcp\": {\"servers\": {\"videohub\": {\"type\": \"local\", \"command\": [\"$ocn\", \"$mcp\"]}}}, or for opencode 1.x {\"mcp\": {\"videohub\": {\"type\": \"local\", \"command\": [\"$ocn\", \"$mcp\"], \"enabled\": true }}}");;
       *) say "opencode: $act in $ocCfg";;
     esac
     install_skill "$ocHome/skills/videohub"; say "Skill installed for opencode: $ocHome/skills/videohub"
@@ -213,3 +227,4 @@ if [ ${#todo[@]} -gt 0 ]; then warn "Left for you to do:"; for t in "${todo[@]}"
 c 36 "== Done"
 echo "  Open VideoHub from your application menu, or run: $hub/videohub.sh"
 echo "  Then start a NEW Claude Code or opencode session so it sees the tools (hub_*, or videohub_hub_* in opencode)."
+echo "  Using the opencode desktop app? Quit and reopen it after this script: it connects to the MCP servers at startup."

@@ -22,7 +22,8 @@ a step is for before running it, never ask them to type a command. Do not change
 4. **Install once:** `./setup.sh --workspace "<folder>" --watch-found yes|no --gpu-encoder yes|no --global-rule yes|no --opencode yes|no --launcher yes|no --startup yes|no --example yes|no`.
    Show errors in plain words and stop; do not work around them.
 5. **Check:** `node server/cli.js hub_workspace`; `./videohub.sh` opens the window. With `--opencode yes`, also check
-   `~/.config/opencode/opencode.json` has `mcp.videohub` and `~/.config/opencode/AGENTS.md` has the rule block.
+   `~/.config/opencode/opencode.json` has `mcp.videohub` **and** `mcp.servers.videohub` (1.x and V2 / the desktop app)
+   and `~/.config/opencode/AGENTS.md` has the rule block.
 6. **Tell the user what now:** where the workspace is, how to open VideoHub, the first thing to try, and that they must
    start a **new** session (Claude Code, or opencode where the tools are named `videohub_hub_*`) for the tools to load.
 
@@ -30,7 +31,8 @@ a step is for before running it, never ask them to type a command. Do not change
 `./setup.sh` (`--dry-run` changes nothing outside this folder; `--yes` takes every recommended answer). It checks Node 22+,
 ffmpeg and a Chromium browser, runs `npm install`, asks the questions above (logic in `scripts/init-config.mjs`, unit-tested),
 registers the MCP server `videohub` (user scope) and installs `skill/videohub` into `~/.claude/skills`; with opencode it
-also writes `mcp.videohub` into `~/.config/opencode/opencode.json` (or `.jsonc`), the rule into
+also writes `mcp.videohub` and `mcp.servers.videohub` into `~/.config/opencode/opencode.json` (or `.jsonc`; the two
+shapes opencode 1.x and the V2 desktop app read), the rule into
 `~/.config/opencode/AGENTS.md` and the skill into `~/.config/opencode/skills` (text splices that keep the user's other
 settings and comments; `scripts/opencode-config.mjs`, unit-tested). Uninstall: `./uninstall.sh`.
 Linux-specific code lives in `server/platform.js` (trash, notifications, file manager, folder picker, process tree, autostart);
