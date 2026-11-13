@@ -5,7 +5,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import path from 'node:path';
 import { HUB_DIR } from './util.js';
 
-const client = new Client({ name: 'videohub-selftest', version: '0.1.0' });
+const client = new Client({ name: 'videohub-selftest', version: '0.2.0' });
 await client.connect(new StdioClientTransport({ command: process.execPath, args: [path.join(HUB_DIR, 'server', 'mcp.js')], env: { ...process.env } }));   // env: keeps VIDEOHUB_PORT (test hubs)
 const { tools } = await client.listTools();
 console.log('tools:', tools.map(t => t.name).join(', '));

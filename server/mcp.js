@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { TOOLS } from './tools.js';
 
-const server = new McpServer({ name: 'videohub', version: '0.1.0' });
+const server = new McpServer({ name: 'videohub', version: '0.2.0' });
 const ok = text => ({ content: [{ type: 'text', text: typeof text === 'string' ? text : JSON.stringify(text, null, 1) }] });
 const fail = e => ({ isError: true, content: [{ type: 'text', text: String(e?.message || e) }] });
 

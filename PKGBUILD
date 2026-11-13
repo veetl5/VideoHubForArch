@@ -5,7 +5,7 @@
 # Per-user data goes to ~/.config/videohub and ~/Documents/VideoHub; the install folder is read-only for normal users,
 # so set VIDEOHUB_DATA_DIR (the launcher does) to keep config, caches and the render queue in ~/.local/share/videohub.
 pkgname=videohub-git
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Local review studio and render queue for videos Claude Code writes as code'
 arch=('any')
