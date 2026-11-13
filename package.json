@@ -1,6 +1,6 @@
 {
   "name": "videohub",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Local hub for videos that Claude Code writes as code (Arch Linux port): project catalog, live preview with no render, frame-accurate review notes sent back to Claude, a protected one-at-a-time render queue with partial re-renders, and MCP tools for Claude.",
   "license": "MIT",
