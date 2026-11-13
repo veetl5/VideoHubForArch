@@ -292,9 +292,11 @@ test('status says which shape the opencode on this machine reads', () => {
     process.env.OPENCODE_BIN = fake;
     let s = status();
     assert.equal(s.cli.version, '1.19.5'); assert.equal(s.mcp.cliShape, 'mcp.videohub');
+    assert.equal(s.mcp.shape, 'mcp.videohub');            // the shape that client runs
     fs.writeFileSync(fake, '#!/bin/sh\necho 2.0.0\n'); fs.chmodSync(fake, 0o755);
     s = status();
     assert.equal(s.cli.version, '2.0.0'); assert.equal(s.mcp.cliShape, 'mcp.servers.videohub');
+    assert.equal(s.mcp.shape, 'mcp.servers.videohub');    // V2 runs this one, not the leftover 1.x entry
     process.env.OPENCODE_BIN = path.join(dir, 'not-there');
     s = status();
     assert.equal(s.cli.found, false); assert.equal(s.mcp.cliShape, null);

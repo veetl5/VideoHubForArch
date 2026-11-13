@@ -394,21 +394,24 @@ export function run(argv) {
         enabled: local && (sh === 'v1' ? entry.enabled !== false : entry.disabled !== true),
       };
     };
+    const desktop = desktopFound();
+    const cli = args['skip-cli'] ? null : opencodeVersion();
+    const probe = args['skip-cli'] ? null : probeMcp(name);
+    const v2isCurrent = !!cli && cli.major !== null && cli.major >= 2;
+    const cliShape = v2isCurrent ? 'mcp.servers.' + name : cli ? 'mcp.' + name : null;
     const v1 = shapeOf('v1'), v2 = shapeOf('v2');
     const present = [v1, v2].filter(x => x.found);
     const stale = present.filter(x => !x.pointsHere);   // an entry left over from another folder or another install
     const found = present.length > 0;
     const pointsHere = found && stale.length === 0;
-    const active = present.find(x => x.pointsHere) || present[0] || null;   // the one opencode would run
+    // the entry the installed client would actually run: the shape it reads, else whatever is there
+    const order = cliShape === v2.where ? [v2, v1] : [v1, v2];
+    const active = order.find(x => x.pointsHere) || order.find(x => x.found) || null;
     const off = present.filter(x => !x.enabled);                             // "enabled": false / "disabled": true
     const enabled = found && off.length === 0;
     const rule = agText.includes(BEGIN);
     const skillOk = fs.existsSync(skill);
     const ready = pointsHere && enabled && rule && skillOk;
-    const desktop = desktopFound();
-    const cli = args['skip-cli'] ? null : opencodeVersion();
-    const probe = args['skip-cli'] ? null : probeMcp(name);
-    const v2isCurrent = !!cli && cli.major !== null && cli.major >= 2;
     return {
       ok: true, ready, hub,
       mcp: {
@@ -417,7 +420,7 @@ export function run(argv) {
         v1: { ...v1, where: 'mcp.' + name }, v2: { ...v2, where: 'mcp.servers.' + name },
         // V2 (current docs, desktop) reads mcp.servers only; 1.x reads mcp.<name> only; setup writes both, so either
         // client finds the server — this says which one the opencode on PATH will read
-        cliShape: v2isCurrent ? 'mcp.servers.' + name : cli ? 'mcp.' + name : null,
+        cliShape,
         probe: probe ? { ran: probe.ran, connected: probe.connected, detail: probe.detail } : null,
       },
       rule: { path: ag, found: rule },
