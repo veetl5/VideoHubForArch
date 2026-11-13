@@ -105,6 +105,17 @@ each file as `*.videohub-backup`.
 Without the MCP tools (any other agent), the same commands run from the shell:
 `node "<VideoHub>/server/cli.js" hub_live '{"project":"<film folder>"}'`.
 
+### Is it working?
+1. `npm run opencode:check` (or `node scripts/opencode-config.mjs status`) — one JSON line, `"ready": true` when the
+   MCP entry points at **this** folder, the rule block is in `AGENTS.md` and the skill file exists; otherwise `action`
+   says what is missing and which `./setup.sh` flag fixes it.
+2. `opencode mcp list` — shows the `videohub` server and its connection status; in a session, `/mcp` lists it too
+   (MCP servers are connected at start-up, so open opencode **after** setup and after moving the folder).
+3. `node server/mcp-selftest.js` — starts the same server the way opencode does and prints the 12 tools it exposes
+   (`hub_live`, `hub_workspace`, …), so a broken server is visible without a chat.
+4. In an opencode session, ask: *"Use the videohub_hub_workspace tool and tell me where my films go."* It should answer
+   with your workspace and `films` folder. Then ask for a small film: VideoHub opens on it (live preview, no render).
+
 ## Your first film
 1. If setup added the example film, its card is on the Projects page. Otherwise the page shows **Welcome to
    VideoHub** with your workspace and films folder (`<workspace>/films`): click **▶ Add the example film**.

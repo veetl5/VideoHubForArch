@@ -185,6 +185,29 @@ test('setup then uninstall gives back the very same file', () => {
   assert.equal(removeMcpEntry(upsertMcpEntry(inline, 'videohub', ENTRY).text, 'videohub').text, '{"model":"x"}');
 });
 
+test('status says what is missing, and when everything is in place', () => {
+  const dir = tmp(), cfg = path.join(dir, 'opencode.json'), ag = path.join(dir, 'AGENTS.md'), sk = path.join(dir, 'skills', 'videohub', 'SKILL.md'), rule = path.join(dir, 'rule.md');
+  const hub = '/opt/videohub', status = () => run(['status', '--config', cfg, '--file', ag, '--skill', sk, '--videohub-dir', hub]);
+  let s = status();
+  assert.equal(s.ready, false);
+  assert.match(s.action, /no "videohub" MCP server/);
+  run(['mcp-add', '--config', cfg, '--command-json', JSON.stringify(['/usr/bin/node', hub + '/server/mcp.js'])]);
+  s = status();
+  assert.equal(s.mcp.found, true); assert.equal(s.mcp.pointsHere, true); assert.equal(s.rule.found, false);
+  assert.equal(s.ready, false); assert.match(s.action, /no VideoHub rule/);
+  fs.writeFileSync(rule, 'rule text');
+  run(['rule-add', '--file', ag, '--rule', rule, '--videohub-dir', hub]);
+  s = status();
+  assert.equal(s.ready, false); assert.match(s.action, /no skill file/);
+  fs.mkdirSync(path.dirname(sk), { recursive: true }); fs.writeFileSync(sk, 'skill');
+  s = status();
+  assert.equal(s.ready, true); assert.match(s.action, /is set up/);
+  // the entry points at another copy of VideoHub
+  run(['mcp-add', '--config', cfg, '--command-json', JSON.stringify(['/usr/bin/node', '/elsewhere/server/mcp.js'])]);
+  s = status();
+  assert.equal(s.mcp.pointsHere, false); assert.equal(s.ready, false); assert.match(s.action, /instead of \/opt\/videohub/);
+});
+
 test('an unknown mode fails loudly', () => {
   assert.throws(() => run(['nonsense']), /unknown mode/);
   assert.throws(() => run(['mcp-add', '--command-json', '[]']), /non-empty/);

@@ -29,7 +29,8 @@
     "start": "node server/hub.js",
     "mcp": "node server/mcp.js",
     "test": "node scripts/test.mjs",
-    "check": "node --check server/hub.js && node --check server/mcp.js"
+    "check": "node --check server/hub.js && node --check server/mcp.js",
+    "opencode:check": "node scripts/opencode-config.mjs status"
   },
   "engines": {
     "node": ">=22"

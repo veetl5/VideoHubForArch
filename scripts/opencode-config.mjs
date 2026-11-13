@@ -8,7 +8,9 @@
 //   node scripts/opencode-config.mjs mcp-remove  [--config <file>] [--name videohub] [--expect <text>] [--dry-run]
 //   node scripts/opencode-config.mjs rule-add    [--file <AGENTS.md>] --rule <file> --videohub-dir <dir> [--dry-run]
 //   node scripts/opencode-config.mjs rule-remove [--file <AGENTS.md>] [--expect <text>] [--dry-run]
-//   --config / --file default to the global opencode config; --dry-run prints the plan and writes nothing.
+//   node scripts/opencode-config.mjs status      [--config <file>] [--file <AGENTS.md>] [--skill <dir>] [--videohub-dir <dir>]
+//   --config / --file default to the global opencode config; --dry-run prints the plan and writes nothing; status writes
+//   nothing either: it says whether the three pieces are in place for this install.
 // Every mode prints one JSON line: {ok, changed, path, action} (or {ok:false, error}).
 import fs from 'node:fs';
 import os from 'node:os';
@@ -254,7 +256,33 @@ export function run(argv) {
     return done(file, true, 'removed the rule');
   }
 
-  throw new Error('unknown mode: ' + (mode || '(none)') + ' (mcp-add, mcp-remove, rule-add, rule-remove)');
+  if (mode === 'status') {   // read-only: is the server, the rule and the skill in place for THIS install?
+    const hub = args['videohub-dir'] || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const cfg = args.config || configPath(), ag = args.file || agentsPath();
+    const skill = args.skill || path.join(opencodeHome(), 'skills', name, 'SKILL.md');
+    const cfgText = read(cfg), agText = read(ag);
+    let entry = null, parseError = null;
+    try { if (cfgText) entry = ((parseJsonc(cfgText).mcp) || {})[name] || null; } catch (e) { parseError = e.message; }
+    const command = Array.isArray(entry?.command) ? entry.command : null;
+    const mcp = !!entry && entry.type === 'local';
+    const pointsHere = !!command && command.some(c => String(c).split('\\').join('/').startsWith(hub.split('\\').join('/')));
+    const rule = agText.includes(BEGIN);
+    const skillOk = fs.existsSync(skill);
+    const ready = mcp && pointsHere && rule && skillOk;
+    return {
+      ok: true, ready, hub,
+      mcp: { path: cfg, found: mcp, command, pointsHere, enabled: entry?.enabled !== false, error: parseError },
+      rule: { path: ag, found: rule },
+      skill: { path: skill, found: skillOk },
+      action: ready ? 'opencode is set up for this install'
+        : !mcp ? `no "${name}" MCP server in ${cfg} (run ./setup.sh --opencode yes)`
+        : !pointsHere ? `"${name}" points at ${JSON.stringify(command)} instead of ${hub} (run ./setup.sh --opencode yes)`
+        : !rule ? `no VideoHub rule in ${ag} (run ./setup.sh --opencode yes)`
+        : `no skill file at ${skill} (run ./setup.sh --opencode yes)`,
+    };
+  }
+
+  throw new Error('unknown mode: ' + (mode || '(none)') + ' (mcp-add, mcp-remove, rule-add, rule-remove, status)');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
