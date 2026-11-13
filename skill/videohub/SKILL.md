@@ -1,6 +1,6 @@
 ---
 name: videohub
-description: How Claude makes and reviews videos with VideoHub, the user's local hub for videos written as code (project catalog, live preview that plays a film from its code with no render, review notes on frames, a protected one-at-a-time render queue with partial re-renders). Use whenever the user asks for a video, animation, explainer, short or film made in code; whenever a video project is previewed, rendered, re-rendered, reviewed or cleaned up; when the user mentions VideoHub, review notes, "Send to Claude", the render queue, or pastes a "VideoHub: N notes on …" or "VideoHub Thumbnail: …" message; and for thumbnails made from a VideoHub sketch (hub_thumb_*).
+description: How a coding agent (Claude Code, opencode or any other) makes and reviews videos with VideoHub, the user's local hub for videos written as code (project catalog, live preview that plays a film from its code with no render, review notes on frames, a protected one-at-a-time render queue with partial re-renders). Use whenever the user asks for a video, animation, explainer, short or film made in code; whenever a video project is previewed, rendered, re-rendered, reviewed or cleaned up; when the user mentions VideoHub, review notes, "Send to Claude", the render queue, or pastes a "VideoHub: N notes on …" or "VideoHub Thumbnail: …" message; and for thumbnails made from a VideoHub sketch (hub_thumb_*).
 ---
 
 # VideoHub workflow
@@ -10,6 +10,10 @@ frames, draws on them and leaves notes, and where renders are queued one at a ti
 **The user's rule: a film is reviewed in VideoHub's live preview first and rendered only when the user asks.**
 
 ## Tools (MCP server `videohub`)
+
+The table uses each tool's own name. **In opencode every MCP tool is prefixed with the server name**, so the same tools
+are `videohub_hub_live`, `videohub_hub_workspace`, `videohub_hub_project`, `videohub_hub_notes`, … — call those names
+there (Claude Code shows them unprefixed). Everything else in this file is the same in both.
 
 | Tool | Use |
 |---|---|
